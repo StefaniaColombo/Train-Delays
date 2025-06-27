@@ -1,0 +1,1812 @@
+---
+title: "Tesi_AbsDelay_S5_v1.1_dir1"
+output: html_document
+date: "2025-03-11"
+---
+
+TENTATIVO 4:
+STATE DEFINITION:
+0) OnTime: Arrival Delay <= 5min
+1) Delay: 5min < Arrival Delay <= 10min
+2) Severe Delay: Arrival Delay > 10min
+
+NB: in questo file riporto la versione ufficial per la distinzione in zone della tratta:
+    A) DIREZIONE 0:
+       - PreMi1: da Varese a Gallarate;
+       - PreMi2: da Busto Arsizio a Rho Fiera;
+       - Mi: da Milano Certosa a Milano Forlanini;
+       - PostMi da Segrate a Treviglio.
+    B)  DIREZIONE 1:
+       - PreMi: da Treviglio a Segrate;
+       - Mi da Milano Forlanini a Milano Certosa;
+       - PostMi1: da Rho Fiera a Busto Arsizio;
+       - PostMi2: da Gallarate a Varese.
+
+Aggiunte rispetto alla versione dell'incontro del 12/3:
+- considero tre mesi al posto di uno solo (settembre, ottobre, novembre)
+- rifaccio tutte le analisi sul nuovo dataset
+- modello frailty e cox sistemati
+
+
+# Libraries and Dataset --------------------------------------------------------
+```{r}
+setwd("C:/Users/Utente/Desktop/Tesi/Dati_Milano-Varese")
+
+# Loading necessary libraries
+library(survival)
+library(survminer)
+library(dplyr) 
+library(ggplot2)
+library(knitr)
+library(broom)
+library(tidyr)
+library(mstate)
+library(msm)
+library(timechange)
+library(lubridate)
+library("colorspace")
+library(frailtypack)
+library(gridExtra)
+library(survidm)
+library(flexsurv)
+library(muhaz)
+library(gridExtra)
+
+```
+
+
+## 3 MESI----
+
+#### Direzione 1: Fascia oraria ----
+
+Analisi descrittiva dei ritardi per fascia oraria in direzioni diverse:
+```{r}
+# Tratta intera (usuale):
+# - Varese
+# - Gazzada
+# - Castronno
+# - Albizzate
+# - Cavaria
+# - Gallarate
+# - Busto
+# - Legnano
+# - Canegrate
+# - Parabiago
+# - Vanzago
+# - Rho
+# - Rho Fiera
+# - Mi Certosa
+# - Mi VIllapizzone
+# - Mi Lancetti
+# - Mi P. Garibaldi
+# - Mi Repubblica
+# - Mi P. Venezia
+# - Mi Dateo
+# - Mi P. Vittoria
+# - Mi Forlanini
+# - Segrate
+# - Pioltello
+# - Vignate
+# - Melzo
+# - Pozzuolo Martesana
+# - Trecella
+# - Cassano D'Adda
+# - Treviglio
+
+#Station_list
+
+# Funzione per calcolare le statistiche
+calcola_statistiche <- function(subset_df) {
+  # Controlliamo se ora_ingresso non è l'ora di default
+  if(all(subset_df$ora_ingresso != as.POSIXct("1970-01-01 01:00:00"))) {
+    ritardo_medio <- mean(subset_df$ritardo_ingresso, na.rm = TRUE)
+    sd_ritardo <- sd(subset_df$ritardo_ingresso, na.rm = TRUE)
+  } else {
+    ritardo_medio <- mean(subset_df$ritardo_uscita, na.rm = TRUE)
+    sd_ritardo <- sd(subset_df$ritardo_uscita, na.rm = TRUE)
+  }
+
+  lower_bound <- ritardo_medio - 2 * sd_ritardo
+  upper_bound <- ritardo_medio + 2 * sd_ritardo
+
+  return(tibble(
+    stazione = unique(subset_df$stazione),
+    traffico_ora = unique(subset_df$traffico_ora),
+    direzione = unique(subset_df$direzione),
+    ritardo_medio = ritardo_medio,
+    sd_ritardo = sd_ritardo,
+    lower_bound = lower_bound,
+    upper_bound = upper_bound
+  ))
+}
+
+# Raggruppiamo i dati per stazione, fascia oraria e direzione e applichiamo la funzione
+risultato <- data_S5 %>%
+  group_by(nome, traffico_ora, direzione) %>%
+  do(calcola_statistiche(.))
+
+# Convertiamo i ritardi in minuti
+risultato <- risultato %>%
+  mutate(
+    ritardo_medio = ritardo_medio / 60,
+    sd_ritardo = sd_ritardo / 60,
+    lower_bound = lower_bound / 60,
+    upper_bound = upper_bound / 60
+  )
+
+# Visualizza il risultato
+View(risultato)
+
+
+
+
+#Plot:
+risultato$nome <- factor(risultato$nome, levels = Station_list)
+
+# Filtra i dati per direzione 0
+risultato_direzione_0 <- risultato %>% filter(direzione == 0)
+
+# Grafico per la direzione 0
+ggplot(risultato_direzione_0, aes(x = nome, y = ritardo_medio, group = traffico_ora, color = traffico_ora)) +
+  geom_line(linewidth = 1) +  # Usa 'linewidth' al posto di 'size'
+  geom_ribbon(aes(ymin = lower_bound, ymax = upper_bound, fill = traffico_ora), alpha = 0.3) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("Morning-Peak Time" = "#87CEFA", 
+                               "Evening-Peak Time" = "#F59B51", 
+                               "Off-Peak Time" = "#EB5C82")) +
+  scale_fill_manual(values = c("Morning-Peak Time" = "#C4E7FD", 
+                              "Evening-Peak Time" = "#F9C79F", 
+                              "Off-Peak Time" = "#F4A4B9")) +
+  theme_minimal() +
+  labs(
+    title = "Mean Delays - Direction 0",
+    x = "Station",
+    y = "Delay (min)",
+    color = "Time Slot",
+    fill = "Time Slot"
+  ) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))  # Ruota le etichette delle stazioni per migliorare la leggibilità
+
+
+
+#Inverto l'ordine delle stazioni per la direzione 1:
+risultato$nome <- factor(risultato$nome, levels = rev(Station_list))
+
+# Filtra i dati per direzione 1
+risultato_direzione_1 <- risultato %>% filter(direzione == 1)
+
+# Inverti l'ordine delle stazioni
+risultato_direzione_1 <- risultato_direzione_1 %>%
+  mutate(nome = factor(nome, levels = rev(unique(nome))))
+
+# Grafico per la direzione 1 con ordine invertito delle stazioni
+ggplot(risultato_direzione_1, aes(x = nome, y = ritardo_medio, group = traffico_ora, color = traffico_ora)) +
+  geom_line(linewidth = 1) +  # Usa 'linewidth' al posto di 'size'
+  geom_ribbon(aes(ymin = lower_bound, ymax = upper_bound, fill = traffico_ora), alpha = 0.3) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("Morning-Peak Time" = "#87CEFA", 
+                               "Evening-Peak Time" = "#F59B51", 
+                               "Off-Peak Time" = "#EB5C82")) +
+  scale_fill_manual(values = c("Morning-Peak Time" = "#C4E7FD", 
+                              "Evening-Peak Time" = "#F9C79F", 
+                              "Off-Peak Time" = "#F4A4B9")) +
+  theme_minimal() +
+  labs(
+    title = "Mean Delays - Direction 1",
+    x = "Station",
+    y = "Delay (min)",
+    color = "Time Slot",
+    fill = "Time Slot"
+  ) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))  # Ruota le etichette delle stazioni per migliorare la leggibilità
+```
+
+
+Controllo eventi per ogni sottogruppo:
+```{r}
+#Peak Mattina:
+print("Peak Mattina")
+events(msdata_1_peakm)
+length(unique(msdata_1_peakm$ID_Mezzo))
+length(unique(msdata_1_peakm$ID_Treno))
+
+#Peak Pome:
+print("Peak Pome")
+events(msdata_1_peakp)
+length(unique(msdata_1_peakp$ID_Mezzo))
+length(unique(msdata_1_peakp$ID_Treno))
+
+#Off Peak:
+print("Off Peak")
+events(msdata_1_offpeak)
+length(unique(msdata_1_offpeak$ID_Mezzo))
+length(unique(msdata_1_offpeak$ID_Treno))
+```
+
+
+MODELLO NP: 
+
+```{r}
+#1.A) metodo aalen:
+#Peak Mattina:
+c1_peakm<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_peakm, method = "breslow")
+msf1_peakm <- msfit(object = c1_peakm, vartype = "aalen", trans = tmat)
+summary(msf1_peakm)
+
+#Peak Pome: 
+c1_peakp<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_peakp, method = "breslow")
+msf1_peakp <- msfit(object = c1_peakp, vartype = "aalen", trans = tmat)
+summary(msf1_peakp)
+
+#Off Peak: 
+c1_offpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_offpeak, method = "breslow")
+msf1_offpeak <- msfit(object = c1_offpeak, vartype = "aalen", trans = tmat)
+summary(msf1_offpeak)
+```
+
+CURVE KAPLAN-MEIER:
+```{r}
+#Sopravvivenza in orario per tutti e tre i gruppi:
+msdata_1_peakm_orario <- msdata_1_peakm[msdata_1_peakm$from == 1, ]
+msdata_1_offpeak_orario <- msdata_1_offpeak[msdata_1_offpeak$from == 1, ]
+msdata_1_peakp_orario <- msdata_1_peakp[msdata_1_peakp$from == 1, ]
+
+#Sopravvivenza in ritardo grave per tutti e tre i gruppi:
+msdata_1_peakm_ritgrave <- msdata_1_peakm[msdata_1_peakm$from == 3, ]
+msdata_1_offpeak_ritgrave <- msdata_1_offpeak[msdata_1_offpeak$from == 3, ]
+msdata_1_peakp_ritgrave <- msdata_1_peakp[msdata_1_peakp$from == 3, ]
+
+
+#KAPLAN-MEIER:
+#Orario
+kaplan_meier_1_orario_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_peakm_orario)
+kaplan_meier_1_orario_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_peakp_orario)
+kaplan_meier_1_orario_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_offpeak_orario)
+
+#Ritardo grave
+kaplan_meier_1_ritgrave_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_peakm_ritgrave)
+kaplan_meier_1_ritgrave_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_peakp_ritgrave)
+kaplan_meier_1_ritgrave_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_offpeak_ritgrave)
+```
+
+```{r}
+# Imposta la griglia di plot
+par(mfrow=c(1,2))
+
+# SOPRAVVIVENZA IN ORARIO:
+plot(kaplan_meier_1_orario_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, xlim=c(0,30), conf.int=FALSE)
+lines(kaplan_meier_1_orario_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_orario_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+
+# SOPRAVVIVENZA IN RITARDO GRAVE:
+plot(kaplan_meier_1_ritgrave_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim=c(0,30), conf.int=FALSE)
+lines(kaplan_meier_1_ritgrave_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ritgrave_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+
+PROBABILITA' DI TRANSIZIONE:
+```{r}
+#Probabilità di transizione di lì a :
+pt1_peakm <- probtrans(msf1_peakm, predt = 0, method = "aalen")
+
+pt1_peakp <- probtrans(msf1_peakp, predt = 0, method = "aalen")
+
+pt1_offpeak <- probtrans(msf1_offpeak, predt = 0, method = "aalen")
+
+
+statecols <- c("#C3EEBF", "#FBDD88", "#E05265")
+ord <- c(1,2,3)
+#plot Peak mattina: 
+p1<-plot(pt1_peakm, ord = ord, from=1, xlim=c(0,30), use.ggplot = TRUE)
+p1 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from OnTime)",x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot0: starting state= Ritardo nel lungo tempo
+p2<-plot(pt1_peakm, ord = ord, from=2, xlim=c(0,30), use.ggplot = TRUE)
+p2 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from Delay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot Peak: starting state= Ritardo nel lungo tempo
+p3<-plot(pt1_peakm, ord = ord, from=3, xlim=c(0,30), use.ggplot = TRUE)
+p3 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from SevereDelay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))
+
+#plot Off peak:
+p4<-plot(pt1_offpeak, ord = ord, from=1, xlim=c(0,30), use.ggplot = TRUE)
+p4 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from OnTime)",x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot1: starting state= Ritardo nel lungo tempo
+p5<-plot(pt1_offpeak, ord = ord, from=2, xlim=c(0,30), use.ggplot = TRUE)
+p5 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from Delay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot0: starting state= Ritardo nel lungo tempo
+p6<-plot(pt1_offpeak, ord = ord, from=3, xlim=c(0,30), use.ggplot = TRUE)
+p6 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from SevereDelay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))
+
+#plot Peak pome:
+p7<-plot(pt1_peakp, ord = ord, from=1, xlim=c(0,30), use.ggplot = TRUE)
+p7 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from OnTime)",x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot1: starting state= Ritardo nel lungo tempo
+p8<-plot(pt1_peakp, ord = ord, from=2, xlim=c(0,30), use.ggplot = TRUE)
+p8 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from Delay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot0: starting state= Ritardo nel lungo tempo
+p9<-plot(pt1_peakp, ord = ord, from=3, xlim=c(0,30), use.ggplot = TRUE)
+p9 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from SevereDelay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))
+
+
+grid.arrange(p1 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From OnTime", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p2 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From Delay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p3 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From SevereDelay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p4 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From OnTime", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p5 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From Delay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p6 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From SevereDelay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p7 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From OnTime", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p8 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From Delay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p9 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From SevereDelay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             nrow= 3, ncol = 3)  # Questo imposta 2 colonne
+```
+
+
+AIC del modello:
+```{r}
+AIC(c1_peakm)
+AIC(c1_offpeak)
+AIC(c1_peakp)
+```
+
+
+ELOS: Expected Lenght of Stay
+Dall'help di R: Given a "probtrans" object, ELOS calculates the (restricted) expected length of stay in each of the states of the multi-state model.
+ELOS(pt, tau)
+The object pt needs to be a "probtrans" object, obtained with forward prediction. The restriction to tau is there because, as in ordinary survival analysis, the probability of being in a state can be positive until infinity, resulting in infinite values. The (restricted, until tau) expected length of stay in state h, given in state g at time s, is given by the integral from s to tau of P_gh(s,t).
+```{r}
+# pt1_peakm <- probtrans(msf1_peakm, predt = 0, method = "aalen")
+# pt1_peakp <- probtrans(msf1_peakp, predt = 0, method = "aalen")
+# pt1_offpeak <- probtrans(msf1_offpeak, predt = 0, method = "aalen")
+
+ELOS(pt1_peakm, 130)
+ELOS(pt1_offpeak, 130)
+ELOS(pt1_peakp, 130)
+
+
+
+# Parametri
+B <- 1000  # Numero di bootstrap, aumentare a 500 o 1000 per pubblicazione
+elos_boot_1 <- numeric(B)  # Per OnTime
+elos_boot_2 <- numeric(B)  # Per MildDelay
+elos_boot_3 <- numeric(B)  # Per SevereDelay
+# Bootstrap loop
+set.seed(123)  # Per riproducibilità
+for (i in 1:B) {
+  sample_ids <- sample(unique(msdata_1_peakm$id), replace = TRUE)
+  boot_data <- do.call(rbind, lapply(sample_ids, function(id) {
+    msdata_1_peakm[msdata_1_peakm$id == id, ]
+  }))
+  
+  # Refit del modello Cox
+  cox_boot <- coxph(Surv(time, status) ~ strata(trans), data = boot_data, method = "breslow")
+  msf_boot <- msfit(cox_boot, trans = tmat)
+  pt_boot <- probtrans(msf_boot, predt = 0)
+  
+  # Calcolo ELOS per stato specifico o totale
+  elos_boot_1[i] <- ELOS(pt_boot, 130)[1,1]
+  elos_boot_2[i] <- ELOS(pt_boot, 130)[2,2]
+  elos_boot_3[i] <- ELOS(pt_boot, 130)[3,3]
+}
+
+# CI percentile
+CI_1 <- quantile(elos_boot_1, probs = c(0.025, 0.975))
+CI_2 <- quantile(elos_boot_2, probs = c(0.025, 0.975))
+CI_3 <- quantile(elos_boot_3, probs = c(0.025, 0.975))
+elos_mean_1 <- mean(elos_boot_1)
+elos_mean_2 <- mean(elos_boot_2)
+elos_mean_3 <- mean(elos_boot_3)
+
+cat("ELOS medio 1:", round(elos_mean_1, 2), "\n")
+cat("CI 95% 1:", round(CI_1[1], 2), "-", round(CI_1[2], 2), "\n")
+cat("ELOS medio 2:", round(elos_mean_2, 2), "\n")
+cat("CI 95% 2:", round(CI_2[1], 2), "-", round(CI_2[2], 2), "\n")
+cat("ELOS medio 3:", round(elos_mean_3, 2), "\n")
+cat("CI 95% 3:", round(CI_3[1], 2), "-", round(CI_3[2], 2), "\n")
+
+
+# Parametri
+B <- 1000  # Numero di bootstrap, aumentare a 500 o 1000 per pubblicazione
+elos_boot_1 <- numeric(B)  # Per OnTime
+elos_boot_2 <- numeric(B)  # Per MildDelay
+elos_boot_3 <- numeric(B)  # Per SevereDelay
+# Bootstrap loop
+set.seed(123)  # Per riproducibilità
+for (i in 1:B) {
+  sample_ids <- sample(unique(msdata_1_offpeak$id), replace = TRUE)
+  boot_data <- do.call(rbind, lapply(sample_ids, function(id) {
+    msdata_1_offpeak[msdata_1_offpeak$id == id, ]
+  }))
+  
+  # Refit del modello Cox
+  cox_boot <- coxph(Surv(time, status) ~ strata(trans), data = boot_data, method = "breslow")
+  msf_boot <- msfit(cox_boot, trans = tmat)
+  pt_boot <- probtrans(msf_boot, predt = 0)
+  
+  # Calcolo ELOS per stato specifico o totale
+  elos_boot_1[i] <- ELOS(pt_boot, 130)[1,1]
+  elos_boot_2[i] <- ELOS(pt_boot, 130)[2,2]
+  elos_boot_3[i] <- ELOS(pt_boot, 130)[3,3]
+}
+
+# CI percentile
+CI_1 <- quantile(elos_boot_1, probs = c(0.025, 0.975))
+CI_2 <- quantile(elos_boot_2, probs = c(0.025, 0.975))
+CI_3 <- quantile(elos_boot_3, probs = c(0.025, 0.975))
+elos_mean_1 <- mean(elos_boot_1)
+elos_mean_2 <- mean(elos_boot_2)
+elos_mean_3 <- mean(elos_boot_3)
+
+cat("ELOS medio 1:", round(elos_mean_1, 2), "\n")
+cat("CI 95% 1:", round(CI_1[1], 2), "-", round(CI_1[2], 2), "\n")
+cat("ELOS medio 2:", round(elos_mean_2, 2), "\n")
+cat("CI 95% 2:", round(CI_2[1], 2), "-", round(CI_2[2], 2), "\n")
+cat("ELOS medio 3:", round(elos_mean_3, 2), "\n")
+cat("CI 95% 3:", round(CI_3[1], 2), "-", round(CI_3[2], 2), "\n")
+
+
+# Parametri
+B <- 1000  # Numero di bootstrap, aumentare a 500 o 1000 per pubblicazione
+elos_boot_1 <- numeric(B)  # Per OnTime
+elos_boot_2 <- numeric(B)  # Per MildDelay
+elos_boot_3 <- numeric(B)  # Per SevereDelay
+# Bootstrap loop
+set.seed(123)  # Per riproducibilità
+pb <- txtProgressBar(min = 0, max = B, style = 3)
+for (i in 1:B) {
+  sample_ids <- sample(unique(msdata_1_peakp$id), replace = TRUE)
+  boot_data <- do.call(rbind, lapply(sample_ids, function(id) {
+    msdata_1_peakp[msdata_1_peakp$id == id, ]
+  }))
+  
+  # Refit del modello Cox
+  cox_boot <- coxph(Surv(time, status) ~ strata(trans), data = boot_data, method = "breslow")
+  msf_boot <- msfit(cox_boot, trans = tmat)
+  pt_boot <- probtrans(msf_boot, predt = 0)
+  
+  # Calcolo ELOS per stato specifico o totale
+  elos_boot_1[i] <- ELOS(pt_boot, 130)[1,1]
+  elos_boot_2[i] <- ELOS(pt_boot, 130)[2,2]
+  elos_boot_3[i] <- ELOS(pt_boot, 130)[3,3]
+  setTxtProgressBar(pb, i)
+}
+
+# CI percentile
+CI_1 <- quantile(elos_boot_1, probs = c(0.025, 0.975))
+CI_2 <- quantile(elos_boot_2, probs = c(0.025, 0.975))
+CI_3 <- quantile(elos_boot_3, probs = c(0.025, 0.975))
+elos_mean_1 <- mean(elos_boot_1)
+elos_mean_2 <- mean(elos_boot_2)
+elos_mean_3 <- mean(elos_boot_3)
+
+cat("ELOS medio 1:", round(elos_mean_1, 2), "\n")
+cat("CI 95% 1:", round(CI_1[1], 2), "-", round(CI_1[2], 2), "\n")
+cat("ELOS medio 2:", round(elos_mean_2, 2), "\n")
+cat("CI 95% 2:", round(CI_2[1], 2), "-", round(CI_2[2], 2), "\n")
+cat("ELOS medio 3:", round(elos_mean_3, 2), "\n")
+cat("CI 95% 3:", round(CI_3[1], 2), "-", round(CI_3[2], 2), "\n")
+```
+
+
+### Direzione 1: Zona Tratta ----
+
+Controllo eventi per ogni sottogruppo:
+```{r}
+#Pre-Milano:
+print("Pre-Milano")
+events(msdata_1_cov_PreMi)
+length(unique(msdata_1_cov_PreMi$ID_Mezzo))
+length(unique(msdata_1_cov_PreMi$ID_Treno))
+
+#Post-Milano.1:
+print("Post-Milano.1")
+events(msdata_1_cov_PostMi.1)
+length(unique(msdata_1_cov_PostMi.1$ID_Mezzo))
+length(unique(msdata_1_cov_PostMi.1$ID_Treno))
+
+#Post-Milano.2:
+print("Post-Milano.2")
+events(msdata_1_cov_PostMi.2)
+length(unique(msdata_1_cov_PostMi.2$ID_Mezzo))
+length(unique(msdata_1_cov_PostMi.2$ID_Treno))
+
+#Milano-Città:
+print("Milano")
+events(msdata_1_cov_Mi)
+length(unique(msdata_1_cov_Mi$ID_Mezzo))
+length(unique(msdata_1_cov_Mi$ID_Treno))
+```
+
+
+#### Modello NP:
+
+```{r}
+#1.A) metodo aalen:
+#Pre-Mialno:
+c1_PreMi<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_cov_PreMi, method = "breslow")
+msf1_PreMi <- msfit(object = c1_PreMi, vartype = "aalen", trans = tmat)
+summary(msf1_PreMi)
+
+#Post-Milano.1: 
+c1_PostMi.1<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_cov_PostMi.1, method = "breslow")
+msf1_PostMi.1 <- msfit(object = c1_PostMi.1, vartype = "aalen", trans = tmat)
+summary(msf1_PostMi.1)
+
+#Post-Milano.2: 
+c1_PostMi.2<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_cov_PostMi.2, method = "breslow")
+msf1_PostMi.2 <- msfit(object = c1_PostMi.2, vartype = "aalen", trans = tmat)
+summary(msf1_PostMi.2)
+
+#Milano-Città: 
+c1_Mi<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_cov_Mi, method = "breslow")
+msf1_Mi <- msfit(object = c1_Mi, vartype = "aalen", trans = tmat)
+summary(msf1_Mi)
+```
+
+CURVE KAPLAN-MEIER:
+```{r}
+#Sopravvivenza in orario per tutti e tre i gruppi:
+msdata_1_PreMi_orario <- msdata_1_cov_PreMi[msdata_1_cov_PreMi$from == 1, ]
+msdata_1_Mi_orario <- msdata_1_cov_Mi[msdata_1_cov_Mi$from == 1, ]
+msdata_1_PostMi.1_orario <- msdata_1_cov_PostMi.1[msdata_1_cov_PostMi.1$from == 1, ]
+msdata_1_PostMi.2_orario <- msdata_1_cov_PostMi.2[msdata_1_cov_PostMi.2$from == 1, ]
+
+#Sopravvivenza in ritardo grave per tutti e tre i gruppi:
+msdata_1_PreMi_ritgrave <- msdata_1_cov_PreMi[msdata_1_cov_PreMi$from == 3, ]
+msdata_1_Mi_ritgrave <- msdata_1_cov_Mi[msdata_1_cov_Mi$from == 3, ]
+msdata_1_PostMi.1_ritgrave <- msdata_1_cov_PostMi.1[msdata_1_cov_PostMi.1$from == 3, ]
+msdata_1_PostMi.2_ritgrave <- msdata_1_cov_PostMi.2[msdata_1_cov_PostMi.2$from == 3, ]
+
+
+#KAPLAN-MEIER:
+#Orario
+kaplan_meier_1_orario_PreMi <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_orario)
+kaplan_meier_1_orario_Mi <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_orario)
+kaplan_meier_1_orario_PostMi.1 <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.1_orario)
+kaplan_meier_1_orario_PostMi.2 <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.2_orario)
+
+#Ritardo grave
+kaplan_meier_1_ritgrave_PreMi <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_ritgrave)
+kaplan_meier_1_ritgrave_Mi <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_ritgrave)
+kaplan_meier_1_ritgrave_PostMi.1 <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.1_ritgrave)
+kaplan_meier_1_ritgrave_PostMi.2 <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.2_ritgrave)
+```
+
+Plot:
+```{r}
+# Imposta la griglia di plot
+par(mfrow=c(1,2))
+
+# SOPRAVVIVENZA IN ORARIO:
+plot(kaplan_meier_1_orario_PreMi, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim=c(0,20))
+lines(kaplan_meier_1_orario_Mi, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_orario_PostMi.1, col = "#F59B51", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_orario_PostMi.2, col = "#00B88D", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Pre-Milano", "Milano", "Post-Milano.1", "Post-Milano.2"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51", "#00B88D"), bty = "n", lwd = 2, cex = 1.2)
+
+# SOPRAVVIVENZA IN RITARDO GRAVE:
+plot(kaplan_meier_1_ritgrave_PreMi, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim = c(0, 10), conf.int=FALSE)
+lines(kaplan_meier_1_ritgrave_Mi, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ritgrave_PostMi.1, col = "#F59B51", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ritgrave_PostMi.2, col = "#00B88D", lwd = 2, conf.int=FALSE)
+```
+
+
+PROBABILITA' DI TRANSIZIONE:
+```{r}
+#Probabilità di transizione di lì a :
+pt1_PreMi <- probtrans(msf1_PreMi, predt = 0, method = "aalen")
+
+pt1_Mi <- probtrans(msf1_Mi, predt = 0, method = "aalen")
+
+pt1_PostMi.1 <- probtrans(msf1_PostMi.1, predt = 0, method = "aalen")
+
+pt1_PostMi.2 <- probtrans(msf1_PostMi.2, predt = 0, method = "aalen")
+
+
+statecols <- c("#C3EEBF", "#FBDD88", "#E05265")
+ord <- c(1,2,3)
+#plot: 
+p1<-plot(pt1_PreMi, ord = ord, from=1, use.ggplot = TRUE, xlim = c(0,30))
+p2<-plot(pt1_PreMi, ord = ord, from=2, use.ggplot = TRUE, xlim = c(0,30))
+p3<-plot(pt1_PreMi, ord = ord, from=3, use.ggplot = TRUE, xlim = c(0,30))
+p4<-plot(pt1_Mi, ord = ord, from=1, xlim = c(0,30), use.ggplot = TRUE)
+p5<-plot(pt1_Mi, ord = ord, from=2, xlim = c(0,30), use.ggplot = TRUE)
+p6<-plot(pt1_Mi, ord = ord, from=3, xlim = c(0,30), use.ggplot = TRUE)
+p7<-plot(pt1_PostMi.1, ord = ord, from=1, xlim = c(0,30), use.ggplot = TRUE)
+p8<-plot(pt1_PostMi.1, ord = ord, from=2, xlim = c(0,30), use.ggplot = TRUE)
+p9<-plot(pt1_PostMi.1, ord = ord, from=3, xlim = c(0,30), use.ggplot = TRUE)
+p10<-plot(pt1_PostMi.2, ord = ord, from=1, xlim = c(0,30), use.ggplot = TRUE)
+p11<-plot(pt1_PostMi.2, ord = ord, from=2, xlim = c(0,30), use.ggplot = TRUE)
+p12<-plot(pt1_PostMi.2, ord = ord, from=3, xlim = c(0,30), use.ggplot = TRUE)
+
+
+grid.arrange(p1 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From OnTime", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p2 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From Delay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p3 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From SevereDelay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p4 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From OnTime", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p5 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From Delay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p6 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From SevereDelay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p7 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From OnTime", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p8 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From Delay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p9 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From SevereDelay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p10 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From OnTime", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p11 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From Delay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p12 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From SevereDelay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             nrow= 4, ncol = 3)  # Questo imposta 2 colonne
+```
+
+PROBABILITA' DI TRANSIZIONE (versione 2):
+```{r}
+#Probabilità di transizione di lì a :
+pt1_PreMi <- probtrans(msf1_PreMi, predt = 0, method = "aalen")
+
+pt1_Mi <- probtrans(msf1_Mi, predt = 0, method = "aalen")
+
+pt1_PostMi.1 <- probtrans(msf1_PostMi.1, predt = 0, method = "aalen")
+
+pt1_PostMi.2 <- probtrans(msf1_PostMi.2, predt = 0, method = "aalen")
+
+
+statecols <- c("#C3EEBF", "#FBDD88", "#E05265")
+ord <- c(1,2,3)
+#plot: 
+p1<-plot(pt1_PreMi, ord = ord, from=1, use.ggplot = TRUE)
+p2<-plot(pt1_PreMi, ord = ord, from=2, use.ggplot = TRUE)
+p3<-plot(pt1_PreMi, ord = ord, from=3, use.ggplot = TRUE)
+p4<-plot(pt1_Mi, ord = ord, from=1, xlim = c(0,20), use.ggplot = TRUE)
+p5<-plot(pt1_Mi, ord = ord, from=2, xlim = c(0,20), use.ggplot = TRUE)
+p6<-plot(pt1_Mi, ord = ord, from=3, xlim = c(0,20), use.ggplot = TRUE)
+p7<-plot(pt1_PostMi.1, ord = ord, from=1, xlim = c(0,20), use.ggplot = TRUE)
+p8<-plot(pt1_PostMi.1, ord = ord, from=2, xlim = c(0,20), use.ggplot = TRUE)
+p9<-plot(pt1_PostMi.1, ord = ord, from=3, xlim = c(0,20), use.ggplot = TRUE)
+p10<-plot(pt1_PostMi.2, ord = ord, from=1, xlim = c(0,20), use.ggplot = TRUE)
+p11<-plot(pt1_PostMi.2, ord = ord, from=2, xlim = c(0,20), use.ggplot = TRUE)
+p12<-plot(pt1_PostMi.2, ord = ord, from=3, xlim = c(0,20), use.ggplot = TRUE)
+
+
+grid.arrange(p1 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "Pre-Mi 1", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p4 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "Milano", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p7 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "Post-Mi 1", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p10 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "Post-Mi 2", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p2 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "Pre-Mi", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p5 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "Milano", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p8 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "Post-Mi 1", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p11 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "Post-Mi 2", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p3 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "Pre-Mi", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p6 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "Milano", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p9 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "Post-Mi 1", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p12 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "Post-Mi 2", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             nrow= 3, ncol = 4)  # Questo imposta 2 colonne
+```
+
+
+AIC del modello:
+```{r}
+AIC(c1_PreMi)
+AIC(c1_Mi)
+AIC(c1_PostMi.1)
+AIC(c1_PostMi.2)
+```
+
+
+ELOS: Expected Lenght of Stay
+Dall'help di R: Given a "probtrans" object, ELOS calculates the (restricted) expected length of stay in each of the states of the multi-state model.
+ELOS(pt, tau)
+The object pt needs to be a "probtrans" object, obtained with forward prediction. The restriction to tau is there because, as in ordinary survival analysis, the probability of being in a state can be positive until infinity, resulting in infinite values. The (restricted, until tau) expected length of stay in state h, given in state g at time s, is given by the integral from s to tau of P_gh(s,t).
+```{r}
+# pt1_PreMi <- probtrans(msf1_PreMi, predt = 0, method = "aalen")
+# pt1_Mi <- probtrans(msf1_Mi, predt = 0, method = "aalen")
+# pt1_PostMi.1 <- probtrans(msf1_PostMi.1, predt = 0, method = "aalen")
+# pt1_PostMi.2 <- probtrans(msf1_PostMi.2, predt = 0, method = "aalen")
+
+ELOS(pt1_PreMi, 30)
+ELOS(pt1_Mi, 30)
+ELOS(pt1_PostMi.1, 30)
+ELOS(pt1_PostMi.2, 30)
+
+# Parametri
+B <- 1000  # Numero di bootstrap, aumentare a 500 o 1000 per pubblicazione
+elos_boot_1 <- numeric(B)  # Per OnTime
+elos_boot_2 <- numeric(B)  # Per MildDelay
+elos_boot_3 <- numeric(B)  # Per SevereDelay
+# Bootstrap loop
+set.seed(123)  # Per riproducibilità
+pb <- txtProgressBar(min = 0, max = B, style = 3)
+for (i in 1:B) {
+  sample_ids <- sample(unique(msdata_1_cov_PreMi$id), replace = TRUE)
+  boot_data <- do.call(rbind, lapply(sample_ids, function(id) {
+    msdata_1_cov_PreMi[msdata_1_cov_PreMi$id == id, ]
+  }))
+  
+  # Refit del modello Cox
+  cox_boot <- coxph(Surv(time, status) ~ strata(trans), data = boot_data, method = "breslow")
+  msf_boot <- msfit(cox_boot, trans = tmat)
+  pt_boot <- probtrans(msf_boot, predt = 0)
+  
+  # Calcolo ELOS per stato specifico o totale
+  elos_boot_1[i] <- ELOS(pt_boot, 30)[1,1]
+  elos_boot_2[i] <- ELOS(pt_boot, 30)[2,2]
+  elos_boot_3[i] <- ELOS(pt_boot, 30)[3,3]
+  setTxtProgressBar(pb, i)
+}
+
+# CI percentile
+CI_1 <- quantile(elos_boot_1, probs = c(0.025, 0.975))
+CI_2 <- quantile(elos_boot_2, probs = c(0.025, 0.975))
+CI_3 <- quantile(elos_boot_3, probs = c(0.025, 0.975))
+elos_mean_1 <- mean(elos_boot_1)
+elos_mean_2 <- mean(elos_boot_2)
+elos_mean_3 <- mean(elos_boot_3)
+
+cat("ELOS medio 1:", round(elos_mean_1, 2), "\n")
+cat("CI 95% 1:", round(CI_1[1], 2), "-", round(CI_1[2], 2), "\n")
+cat("ELOS medio 2:", round(elos_mean_2, 2), "\n")
+cat("CI 95% 2:", round(CI_2[1], 2), "-", round(CI_2[2], 2), "\n")
+cat("ELOS medio 3:", round(elos_mean_3, 2), "\n")
+cat("CI 95% 3:", round(CI_3[1], 2), "-", round(CI_3[2], 2), "\n")
+
+
+# Parametri
+B <- 1000  # Numero di bootstrap, aumentare a 500 o 1000 per pubblicazione
+elos_boot_1 <- numeric(B)  # Per OnTime
+elos_boot_2 <- numeric(B)  # Per MildDelay
+elos_boot_3 <- numeric(B)  # Per SevereDelay
+# Bootstrap loop
+set.seed(123)  # Per riproducibilità
+pb <- txtProgressBar(min = 0, max = B, style = 3)
+for (i in 1:B) {
+  sample_ids <- sample(unique(msdata_1_cov_Mi$id), replace = TRUE)
+  boot_data <- do.call(rbind, lapply(sample_ids, function(id) {
+    msdata_1_cov_Mi[msdata_1_cov_Mi$id == id, ]
+  }))
+  
+  # Refit del modello Cox
+  cox_boot <- coxph(Surv(time, status) ~ strata(trans), data = boot_data, method = "breslow")
+  msf_boot <- msfit(cox_boot, trans = tmat)
+  pt_boot <- probtrans(msf_boot, predt = 0)
+  
+  # Calcolo ELOS per stato specifico o totale
+  elos_boot_1[i] <- ELOS(pt_boot, 30)[1,1]
+  elos_boot_2[i] <- ELOS(pt_boot, 30)[2,2]
+  elos_boot_3[i] <- ELOS(pt_boot, 30)[3,3]
+  setTxtProgressBar(pb, i)
+}
+
+# CI percentile
+CI_1 <- quantile(elos_boot_1, probs = c(0.025, 0.975))
+CI_2 <- quantile(elos_boot_2, probs = c(0.025, 0.975))
+CI_3 <- quantile(elos_boot_3, probs = c(0.025, 0.975))
+elos_mean_1 <- mean(elos_boot_1)
+elos_mean_2 <- mean(elos_boot_2)
+elos_mean_3 <- mean(elos_boot_3)
+
+cat("ELOS medio 1:", round(elos_mean_1, 2), "\n")
+cat("CI 95% 1:", round(CI_1[1], 2), "-", round(CI_1[2], 2), "\n")
+cat("ELOS medio 2:", round(elos_mean_2, 2), "\n")
+cat("CI 95% 2:", round(CI_2[1], 2), "-", round(CI_2[2], 2), "\n")
+cat("ELOS medio 3:", round(elos_mean_3, 2), "\n")
+cat("CI 95% 3:", round(CI_3[1], 2), "-", round(CI_3[2], 2), "\n")
+
+
+# Parametri
+B <- 1000  # Numero di bootstrap, aumentare a 500 o 1000 per pubblicazione
+elos_boot_1 <- numeric(B)  # Per OnTime
+elos_boot_2 <- numeric(B)  # Per MildDelay
+elos_boot_3 <- numeric(B)  # Per SevereDelay
+# Bootstrap loop
+set.seed(123)  # Per riproducibilità
+pb <- txtProgressBar(min = 0, max = B, style = 3)
+for (i in 1:B) {
+  sample_ids <- sample(unique(msdata_1_cov_PostMi.1$id), replace = TRUE)
+  boot_data <- do.call(rbind, lapply(sample_ids, function(id) {
+    msdata_1_cov_PostMi.1[msdata_1_cov_PostMi.1$id == id, ]
+  }))
+  
+  # Refit del modello Cox
+  cox_boot <- coxph(Surv(time, status) ~ strata(trans), data = boot_data, method = "breslow")
+  msf_boot <- msfit(cox_boot, trans = tmat)
+  pt_boot <- probtrans(msf_boot, predt = 0)
+  
+  # Calcolo ELOS per stato specifico o totale
+  elos_boot_1[i] <- ELOS(pt_boot, 30)[1,1]
+  elos_boot_2[i] <- ELOS(pt_boot, 30)[2,2]
+  elos_boot_3[i] <- ELOS(pt_boot, 30)[3,3]
+  setTxtProgressBar(pb, i)
+}
+
+
+# CI percentile
+CI_1 <- quantile(elos_boot_1, probs = c(0.025, 0.975))
+CI_2 <- quantile(elos_boot_2, probs = c(0.025, 0.975))
+CI_3 <- quantile(elos_boot_3, probs = c(0.025, 0.975))
+elos_mean_1 <- mean(elos_boot_1)
+elos_mean_2 <- mean(elos_boot_2)
+elos_mean_3 <- mean(elos_boot_3)
+
+cat("ELOS medio 1:", round(elos_mean_1, 2), "\n")
+cat("CI 95% 1:", round(CI_1[1], 2), "-", round(CI_1[2], 2), "\n")
+cat("ELOS medio 2:", round(elos_mean_2, 2), "\n")
+cat("CI 95% 2:", round(CI_2[1], 2), "-", round(CI_2[2], 2), "\n")
+cat("ELOS medio 3:", round(elos_mean_3, 2), "\n")
+cat("CI 95% 3:", round(CI_3[1], 2), "-", round(CI_3[2], 2), "\n")
+
+
+# Parametri
+B <- 1000  # Numero di bootstrap, aumentare a 500 o 1000 per pubblicazione
+elos_boot_1 <- numeric(B)  # Per OnTime
+elos_boot_2 <- numeric(B)  # Per MildDelay
+elos_boot_3 <- numeric(B)  # Per SevereDelay
+# Bootstrap loop
+set.seed(123)  # Per riproducibilità
+pb <- txtProgressBar(min = 0, max = B, style = 3)
+for (i in 1:B) {
+  sample_ids <- sample(unique(msdata_1_cov_PostMi.2$id), replace = TRUE)
+  boot_data <- do.call(rbind, lapply(sample_ids, function(id) {
+    msdata_1_cov_PostMi.2[msdata_1_cov_PostMi.2$id == id, ]
+  }))
+  
+  # Refit del modello Cox
+  cox_boot <- coxph(Surv(time, status) ~ strata(trans), data = boot_data, method = "breslow")
+  msf_boot <- msfit(cox_boot, trans = tmat)
+  pt_boot <- probtrans(msf_boot, predt = 0)
+  
+  # Calcolo ELOS per stato specifico o totale
+  elos_boot_1[i] <- ELOS(pt_boot, 30)[1,1]
+  elos_boot_2[i] <- ELOS(pt_boot, 30)[2,2]
+  elos_boot_3[i] <- ELOS(pt_boot, 30)[3,3]
+  setTxtProgressBar(pb, i)
+}
+
+# CI percentile
+CI_1 <- quantile(elos_boot_1, probs = c(0.025, 0.975))
+CI_2 <- quantile(elos_boot_2, probs = c(0.025, 0.975))
+CI_3 <- quantile(elos_boot_3, probs = c(0.025, 0.975))
+elos_mean_1 <- mean(elos_boot_1)
+elos_mean_2 <- mean(elos_boot_2)
+elos_mean_3 <- mean(elos_boot_3)
+
+cat("ELOS medio 1:", round(elos_mean_1, 2), "\n")
+cat("CI 95% 1:", round(CI_1[1], 2), "-", round(CI_1[2], 2), "\n")
+cat("ELOS medio 2:", round(elos_mean_2, 2), "\n")
+cat("CI 95% 2:", round(CI_2[1], 2), "-", round(CI_2[2], 2), "\n")
+cat("ELOS medio 3:", round(elos_mean_3, 2), "\n")
+cat("CI 95% 3:", round(CI_3[1], 2), "-", round(CI_3[2], 2), "\n")
+```
+
+
+
+#### Direzione 1: Fascia Oraria & Zona Tratta ----
+
+Preparo i dataset:
+```{r}
+#Pre-Milano & Fascia Oraria:
+msdata_1_PreMi_peakm<-msdata_1_cov_PreMi[msdata_1_cov_PreMi$traffico_ora=="Morning-Peak Time", ]
+msdata_1_PreMi_offpeak<-msdata_1_cov_PreMi[msdata_1_cov_PreMi$traffico_ora=="Off-Peak Time", ]
+msdata_1_PreMi_peakp<-msdata_1_cov_PreMi[msdata_1_cov_PreMi$traffico_ora=="Evening-Peak Time", ]
+
+#Post-Milano & Fascia Oraria:
+msdata_1_PostMi_peakm<-msdata_1_cov_PostMi[msdata_1_cov_PostMi$traffico_ora=="Morning-Peak Time", ]
+msdata_1_PostMi_offpeak<-msdata_1_cov_PostMi[msdata_1_cov_PostMi$traffico_ora=="Off-Peak Time", ]
+msdata_1_PostMi_peakp<-msdata_1_cov_PostMi[msdata_1_cov_PostMi$traffico_ora=="Evening-Peak Time", ]
+
+#Milano-Città & Fascia Oraria:
+msdata_1_Mi_peakm<-msdata_1_cov_Mi[msdata_1_cov_Mi$traffico_ora=="Morning-Peak Time", ]
+msdata_1_Mi_offpeak<-msdata_1_cov_Mi[msdata_1_cov_Mi$traffico_ora=="Off-Peak Time", ]
+msdata_1_Mi_peakp<-msdata_1_cov_Mi[msdata_1_cov_Mi$traffico_ora=="Evening-Peak Time", ]
+```
+
+Controllo eventi per ogni sottogruppo:
+```{r}
+#Pre-Milano & Fascia Oraria:
+print("Pre-Milano & MorningPeak")
+events(msdata_1_PreMi_peakm)
+length(unique(msdata_1_PreMi_peakm$ID_Mezzo))
+length(unique(msdata_1_PreMi_peakm$ID_Treno))
+print("Pre-Milano & OffPeak")
+events(msdata_1_PreMi_offpeak)
+length(unique(msdata_1_PreMi_offpeak$ID_Mezzo))
+length(unique(msdata_1_PreMi_offpeak$ID_Treno))
+print("Pre-Milano & EveningPeak")
+events(msdata_1_PreMi_peakp)
+length(unique(msdata_1_PreMi_peakp$ID_Mezzo))
+length(unique(msdata_1_PreMi_peakp$ID_Treno))
+
+#Post-Milano & Fascia Oraria:
+print("Post-Milano & MorningPeak")
+events(msdata_1_PostMi_peakm)
+length(unique(msdata_1_PostMi_peakm$ID_Mezzo))
+length(unique(msdata_1_PostMi_peakm$ID_Treno))
+print("Post-Milano & OffPeak")
+events(msdata_1_PostMi_offpeak)
+length(unique(msdata_1_PostMi_offpeak$ID_Mezzo))
+length(unique(msdata_1_PostMi_offpeak$ID_Treno))
+print("Post-Milano & EveningPeak")
+events(msdata_1_PostMi_peakp)
+length(unique(msdata_1_PostMi_peakp$ID_Mezzo))
+length(unique(msdata_1_PostMi_peakp$ID_Treno))
+
+#Milano-Città & Fascia Oraria:
+print("Milano-Città & MorningPeak")
+events(msdata_1_Mi_peakm)
+length(unique(msdata_1_Mi_peakm$ID_Mezzo))
+length(unique(msdata_1_Mi_peakm$ID_Treno))
+print("Milano-Città & OffPeak")
+events(msdata_1_Mi_offpeak)
+length(unique(msdata_1_Mi_offpeak$ID_Mezzo))
+length(unique(msdata_1_Mi_offpeak$ID_Treno))
+print("Milano-Città & EveningPeak")
+events(msdata_1_Mi_peakp)
+length(unique(msdata_1_Mi_peakp$ID_Mezzo))
+length(unique(msdata_1_Mi_peakp$ID_Treno))
+```
+
+
+MODELLO NP:
+
+```{r}
+#1.A) metodo aalen:
+#Pre-Mialno & Fascia Oraria:
+c1_PreMi_peakm<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_PreMi_peakm, method = "breslow")
+msf1_PreMi_peakm <- msfit(object = c1_PreMi_peakm, vartype = "aalen", trans = tmat)
+summary(msf1_PreMi_peakm)
+c1_PreMi_offpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_PreMi_offpeak, method = "breslow")
+msf1_PreMi_offpeak <- msfit(object = c1_PreMi_offpeak, vartype = "aalen", trans = tmat)
+summary(msf1_PreMi_offpeak)
+c1_PreMi_peakp<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_PreMi_peakp, method = "breslow")
+msf1_PreMi_peakp <- msfit(object = c1_PreMi_peakp, vartype = "aalen", trans = tmat)
+summary(msf1_PreMi_peakp)
+
+#Post-Milano & Fascia Oraria: 
+c1_PostMi_peakm<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_PostMi_peakm, method = "breslow")
+msf1_PostMi_peakm <- msfit(object = c1_PostMi_peakm, vartype = "aalen", trans = tmat)
+summary(msf1_PostMi_peakm)
+c1_PostMi_offpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_PostMi_offpeak, method = "breslow")
+msf1_PostMi_offpeak <- msfit(object = c1_PostMi_offpeak, vartype = "aalen", trans = tmat)
+summary(msf1_PostMi_offpeak)
+c1_PostMi_peakp<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_PostMi_peakp, method = "breslow")
+msf1_PostMi_peakp <- msfit(object = c1_PostMi_peakp, vartype = "aalen", trans = tmat)
+summary(msf1_PostMi_peakp)
+
+#Milano-Città & Fascia Oraria: 
+c1_Mi_peakm<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Mi_peakm, method = "breslow")
+msf1_Mi_peakm <- msfit(object = c1_Mi_peakm, vartype = "aalen", trans = tmat)
+summary(msf1_Mi_peakm)
+c1_Mi_offpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Mi_offpeak, method = "breslow")
+msf1_Mi_offpeak <- msfit(object = c1_Mi_offpeak, vartype = "aalen", trans = tmat)
+summary(msf1_Mi_offpeak)
+c1_Mi_peakp<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Mi_peakp, method = "breslow")
+msf1_Mi_peakp <- msfit(object = c1_Mi_peakp, vartype = "aalen", trans = tmat)
+summary(msf1_Mi_peakp)
+```
+
+
+CURVE KAPLAN-MEIER:
+```{r}
+#PRE-MILANO & FASCIA ORARIA
+#Sopravvivenza in orario per tutti e tre i gruppi:
+msdata_1_PreMi_peakm_orario <- msdata_1_PreMi_peakm[msdata_1_PreMi_peakm$from == 1, ]
+msdata_1_PreMi_offpeak_orario <- msdata_1_PreMi_offpeak[msdata_1_PreMi_offpeak$from == 1, ]
+msdata_1_PreMi_peakp_orario <- msdata_1_PreMi_peakp[msdata_1_PreMi_peakp$from == 1, ]
+
+#Sopravvivenza in ritardo per tutti e tre i gruppi:
+msdata_1_PreMi_peakm_ritardo_o <- msdata_1_PreMi_peakm[msdata_1_PreMi_peakm$from == 2 & msdata_1_PreMi_peakm$to == 1, ]
+msdata_1_PreMi_offpeak_ritardo_o <- msdata_1_PreMi_offpeak[msdata_1_PreMi_offpeak$from == 2 & msdata_1_PreMi_offpeak$to == 1, ]
+msdata_1_PreMi_peakp_ritardo_o <- msdata_1_PreMi_peakp[msdata_1_PreMi_peakp$from == 2 & msdata_1_PreMi_peakp$to == 1, ]
+msdata_1_PreMi_peakm_ritardo_rg <- msdata_1_PreMi_peakm[msdata_1_PreMi_peakm$from == 2 & msdata_1_PreMi_peakm$to == 3, ]
+msdata_1_PreMi_offpeak_ritardo_rg <- msdata_1_PreMi_offpeak[msdata_1_PreMi_offpeak$from == 2 & msdata_1_PreMi_offpeak$to == 3, ]
+msdata_1_PreMi_peakp_ritardo_rg <- msdata_1_PreMi_peakp[msdata_1_PreMi_peakp$from == 2 & msdata_1_PreMi_peakp$to == 3, ]
+
+#Sopravvivenza in ritardo grave per tutti e tre i gruppi:
+msdata_1_PreMi_peakm_ritgrave <- msdata_1_PreMi_peakm[msdata_1_PreMi_peakm$from == 3, ]
+msdata_1_PreMi_offpeak_ritgrave <- msdata_1_PreMi_offpeak[msdata_1_PreMi_offpeak$from == 3, ]
+msdata_1_PreMi_peakp_ritgrave <- msdata_1_PreMi_peakp[msdata_1_PreMi_peakp$from == 3, ]
+
+
+#KAPLAN-MEIER:
+#Orario
+kaplan_meier_1_orario_PreMi_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_peakm_orario)
+kaplan_meier_1_orario_PreMi_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_offpeak_orario)
+kaplan_meier_1_orario_PreMi_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_peakp_orario)
+
+#Ritardo
+kaplan_meier_1_ritardo_PreMi_peakm_o <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_peakm_ritardo_o)
+kaplan_meier_1_ritardo_PreMi_offpeak_o <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_offpeak_ritardo_o)
+kaplan_meier_1_ritardo_PreMi_peakp_o <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_peakp_ritardo_o)
+kaplan_meier_1_ritardo_PreMi_peakm_rg <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_peakm_ritardo_rg)
+kaplan_meier_1_ritardo_PreMi_offpeak_rg <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_offpeak_ritardo_rg)
+kaplan_meier_1_ritardo_PreMi_peakp_rg <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_peakp_ritardo_rg)
+
+#Ritardo grave
+kaplan_meier_1_ritgrave_PreMi_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_peakm_ritgrave)
+kaplan_meier_1_ritgrave_PreMi_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_offpeak_ritgrave)
+kaplan_meier_1_ritgrave_PreMi_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_peakp_ritgrave)
+
+
+
+#POST-MILANO & FASCIA ORARIA
+#Sopravvivenza in orario per tutti e tre i gruppi:
+msdata_1_PostMi_peakm_orario <- msdata_1_PostMi_peakm[msdata_1_PostMi_peakm$from == 1, ]
+msdata_1_PostMi_offpeak_orario <- msdata_1_PostMi_offpeak[msdata_1_PostMi_offpeak$from == 1, ]
+msdata_1_PostMi_peakp_orario <- msdata_1_PostMi_peakp[msdata_1_PostMi_peakp$from == 1, ]
+
+#Sopravvivenza in ritardo per tutti e tre i gruppi:
+msdata_1_PostMi_peakm_ritardo_o <- msdata_1_PostMi_peakm[msdata_1_PostMi_peakm$from == 2 & msdata_1_PostMi_peakm$to == 1, ]
+msdata_1_PostMi_offpeak_ritardo_o <- msdata_1_PostMi_offpeak[msdata_1_PostMi_offpeak$from == 2 & msdata_1_PostMi_offpeak$to == 1, ]
+msdata_1_PostMi_peakp_ritardo_o <- msdata_1_PostMi_peakp[msdata_1_PostMi_peakp$from == 2 & msdata_1_PostMi_peakp$to == 1, ]
+msdata_1_PostMi_peakm_ritardo_rg <- msdata_1_PostMi_peakm[msdata_1_PostMi_peakm$from == 2 & msdata_1_PostMi_peakm$to == 3, ]
+msdata_1_PostMi_offpeak_ritardo_rg <- msdata_1_PostMi_offpeak[msdata_1_PostMi_offpeak$from == 2 & msdata_1_PostMi_offpeak$to == 3, ]
+msdata_1_PostMi_peakp_ritardo_rg <- msdata_1_PostMi_peakp[msdata_1_PostMi_peakp$from == 2 & msdata_1_PostMi_peakp$to == 3, ]
+
+#Sopravvivenza in ritardo grave per tutti e tre i gruppi:
+msdata_1_PostMi_peakm_ritgrave <- msdata_1_PostMi_peakm[msdata_1_PostMi_peakm$from == 3, ]
+msdata_1_PostMi_offpeak_ritgrave <- msdata_1_PostMi_offpeak[msdata_1_PostMi_offpeak$from == 3, ]
+msdata_1_PostMi_peakp_ritgrave <- msdata_1_PostMi_peakp[msdata_1_PostMi_peakp$from == 3, ]
+
+
+#KAPLAN-MEIER:
+#Orario
+kaplan_meier_1_orario_PostMi_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi_peakm_orario)
+kaplan_meier_1_orario_PostMi_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi_offpeak_orario)
+kaplan_meier_1_orario_PostMi_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi_peakp_orario)
+
+#Ritardo
+kaplan_meier_1_ritardo_PostMi_peakm_o <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi_peakm_ritardo_o)
+kaplan_meier_1_ritardo_PostMi_offpeak_o <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi_offpeak_ritardo_o)
+kaplan_meier_1_ritardo_PostMi_peakp_o <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi_peakp_ritardo_o)
+kaplan_meier_1_ritardo_PostMi_peakm_rg <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi_peakm_ritardo_rg)
+kaplan_meier_1_ritardo_PostMi_offpeak_rg <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi_offpeak_ritardo_rg)
+kaplan_meier_1_ritardo_PostMi_peakp_rg <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi_peakp_ritardo_rg)
+
+#Ritardo grave
+kaplan_meier_1_ritgrave_PostMi_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi_peakm_ritgrave)
+kaplan_meier_1_ritgrave_PostMi_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi_offpeak_ritgrave)
+kaplan_meier_1_ritgrave_PostMi_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi_peakp_ritgrave)
+
+
+
+#MILANO-CITTA' & FASCIA ORARIA
+#Sopravvivenza in orario per tutti e tre i gruppi:
+msdata_1_Mi_peakm_orario <- msdata_1_Mi_peakm[msdata_1_Mi_peakm$from == 1, ]
+msdata_1_Mi_offpeak_orario <- msdata_1_Mi_offpeak[msdata_1_Mi_offpeak$from == 1, ]
+msdata_1_Mi_peakp_orario <- msdata_1_Mi_peakp[msdata_1_Mi_peakp$from == 1, ]
+
+#Sopravvivenza in ritardo per tutti e tre i gruppi:
+msdata_1_Mi_peakm_ritardo_o <- msdata_1_Mi_peakm[msdata_1_Mi_peakm$from == 2 & msdata_1_Mi_peakm$to == 1, ]
+msdata_1_Mi_offpeak_ritardo_o <- msdata_1_Mi_offpeak[msdata_1_Mi_offpeak$from == 2 & msdata_1_Mi_offpeak$to == 1, ]
+msdata_1_Mi_peakp_ritardo_o <- msdata_1_Mi_peakp[msdata_1_Mi_peakp$from == 2 & msdata_1_Mi_peakp$to == 1, ]
+msdata_1_Mi_peakm_ritardo_rg <- msdata_1_Mi_peakm[msdata_1_Mi_peakm$from == 2 & msdata_1_Mi_peakm$to == 3, ]
+msdata_1_Mi_offpeak_ritardo_rg <- msdata_1_Mi_offpeak[msdata_1_Mi_offpeak$from == 2 & msdata_1_Mi_offpeak$to == 3, ]
+msdata_1_Mi_peakp_ritardo_rg <- msdata_1_Mi_peakp[msdata_1_Mi_peakp$from == 2 & msdata_1_Mi_peakp$to == 3, ]
+
+#Sopravvivenza in ritardo grave per tutti e tre i gruppi:
+msdata_1_Mi_peakm_ritgrave <- msdata_1_Mi_peakm[msdata_1_Mi_peakm$from == 3, ]
+msdata_1_Mi_offpeak_ritgrave <- msdata_1_Mi_offpeak[msdata_1_Mi_offpeak$from == 3, ]
+msdata_1_Mi_peakp_ritgrave <- msdata_1_Mi_peakp[msdata_1_Mi_peakp$from == 3, ]
+
+
+#KAPLAN-MEIER:
+#Orario
+kaplan_meier_1_orario_Mi_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_peakm_orario)
+kaplan_meier_1_orario_Mi_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_offpeak_orario)
+kaplan_meier_1_orario_Mi_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_peakp_orario)
+
+#Ritardo
+kaplan_meier_1_ritardo_Mi_peakm_o <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_peakm_ritardo_o)
+kaplan_meier_1_ritardo_Mi_offpeak_o <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_offpeak_ritardo_o)
+kaplan_meier_1_ritardo_Mi_peakp_o <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_peakp_ritardo_o)
+kaplan_meier_1_ritardo_Mi_peakm_rg <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_peakm_ritardo_rg)
+kaplan_meier_1_ritardo_Mi_offpeak_rg <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_offpeak_ritardo_rg)
+kaplan_meier_1_ritardo_Mi_peakp_rg <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_peakp_ritardo_rg)
+
+#Ritardo grave
+kaplan_meier_1_ritgrave_Mi_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_peakm_ritgrave)
+kaplan_meier_1_ritgrave_Mi_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_offpeak_ritgrave)
+kaplan_meier_1_ritgrave_Mi_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_peakp_ritgrave)
+```
+
+Plot:
+1) Pre-Milano & Fascia Oraria
+```{r}
+# Imposta la griglia di plot
+par(mfrow=c(1,2))
+
+# SOPRAVVIVENZA IN ORARIO:
+plot(kaplan_meier_1_orario_PreMi_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim= c(0,20))
+lines(kaplan_meier_1_orario_PreMi_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_orario_PreMi_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+
+# SOPRAVVIVENZA IN RITARDO GRAVE:
+plot(kaplan_meier_1_ritgrave_PreMi_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim = c(0, 10), conf.int=FALSE)
+lines(kaplan_meier_1_ritgrave_PreMi_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ritgrave_PreMi_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+
+2) Post-Milano & Fascia Oraria
+```{r}
+# Imposta la griglia di plot
+par(mfrow=c(1,2))
+
+# SOPRAVVIVENZA IN ORARIO:
+plot(kaplan_meier_1_orario_PostMi_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim = c(0,20))
+lines(kaplan_meier_1_orario_PostMi_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_orario_PostMi_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+
+
+# SOPRAVVIVENZA IN RITARDO GRAVE:
+plot(kaplan_meier_1_ritgrave_PostMi_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim = c(0,20))
+lines(kaplan_meier_1_ritgrave_PostMi_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ritgrave_PostMi_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+
+3) Milano-Città & Fascia Oraria
+```{r}
+# Imposta la griglia di plot
+par(mfrow=c(1,2))
+
+# SOPRAVVIVENZA IN ORARIO:
+plot(kaplan_meier_1_orario_Mi_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim= c(0,20))
+lines(kaplan_meier_1_orario_Mi_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_orario_Mi_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+
+
+# SOPRAVVIVENZA IN RITARDO GRAVE:
+plot(kaplan_meier_1_ritgrave_Mi_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim=c(0,10))
+lines(kaplan_meier_1_ritgrave_Mi_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ritgrave_Mi_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+
+PROBABILITA' DI TRANSIZIONE:
+1) Pre-Milano & Fascia Oraria
+```{r}
+#Probabilità di transizione di lì a :
+pt1_PreMi_peakm <- probtrans(msf1_PreMi_peakm, predt = 0, method = "aalen")
+
+pt1_PreMi_offpeak <- probtrans(msf1_PreMi_offpeak, predt = 0, method = "aalen")
+
+pt1_PreMi_peakp <- probtrans(msf1_PreMi_peakp, predt = 0, method = "aalen")
+
+
+statecols <- c("#C3EEBF", "#FBDD88", "#E05265")
+ord <- c(1,2,3)
+#plot Pre-Milano & Peak Mattina: 
+p1<-plot(pt1_PreMi_peakm, ord = ord, from=1, use.ggplot = TRUE)
+p1 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from OnTime)",x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot0: starting state= Ritardo nel lungo tempo
+p2<-plot(pt1_PreMi_peakm, ord = ord, from=2, use.ggplot = TRUE)
+p2 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from Delay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot Peak: starting state= Ritardo nel lungo tempo
+p3<-plot(pt1_PreMi_peakm, ord = ord, from=3, use.ggplot = TRUE)
+p3 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from SevereDelay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))
+
+#plot Pre-Milano & Off Peak:
+p4<-plot(pt1_PreMi_offpeak, ord = ord, from=1, use.ggplot = TRUE)
+p4 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from OnTime)",x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot1: starting state= Ritardo nel lungo tempo
+p5<-plot(pt1_PreMi_offpeak, ord = ord, from=2, use.ggplot = TRUE)
+p5 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from Delay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot0: starting state= Ritardo nel lungo tempo
+p6<-plot(pt1_PreMi_offpeak, ord = ord, from=3, use.ggplot = TRUE)
+p6 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from SevereDelay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))
+
+#plot Pre-Milano & Peak Pome:
+p7<-plot(pt1_PreMi_peakp, ord = ord, from=1, xlim=c(0,30), use.ggplot = TRUE)
+p7 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from OnTime)",x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot1: starting state= Ritardo nel lungo tempo
+p8<-plot(pt1_PreMi_peakp, ord = ord, from=2, xlim=c(0,30), use.ggplot = TRUE)
+p8 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from Delay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot0: starting state= Ritardo nel lungo tempo
+p9<-plot(pt1_PreMi_peakp, ord = ord, from=3, xlim=c(0,30), use.ggplot = TRUE)
+p9 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from SevereDelay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))
+
+
+grid.arrange(p1 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From OnTime", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p2 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From Delay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p3 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From SevereDelay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p4 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From OnTime", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p5 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From Delay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p6 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From SevereDelay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p7 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From OnTime", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p8 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From Delay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p9 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From SevereDelay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             nrow= 3, ncol = 3)  # Questo imposta 2 colonne
+```
+
+2) Post-Milano & Fascia Oraria
+```{r}
+#Probabilità di transizione di lì a :
+pt1_PostMi_peakm <- probtrans(msf1_PostMi_peakm, predt = 0, method = "aalen")
+
+pt1_PostMi_offpeak <- probtrans(msf1_PostMi_offpeak, predt = 0, method = "aalen")
+
+pt1_PostMi_peakp <- probtrans(msf1_PostMi_peakp, predt = 0, method = "aalen")
+
+
+statecols <- c("#C3EEBF", "#FBDD88", "#E05265")
+ord <- c(1,2,3)
+#plot Pre-Milano & Peak Mattina: 
+p1<-plot(pt1_PostMi_peakm, ord = ord, from=1, use.ggplot = TRUE, xlim = c(0,30))
+p1 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from OnTime)",x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot0: starting state= Ritardo nel lungo tempo
+p2<-plot(pt1_PostMi_peakm, ord = ord, from=2, use.ggplot = TRUE, xlim = c(0,30))
+p2 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from Delay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot Peak: starting state= Ritardo nel lungo tempo
+p3<-plot(pt1_PostMi_peakm, ord = ord, from=3, use.ggplot = TRUE, xlim = c(0,30))
+p3 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from SevereDelay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))
+
+#plot Pre-Milano & Off Peak:
+p4<-plot(pt1_PostMi_offpeak, ord = ord, from=1, use.ggplot = TRUE, xlim = c(0,30))
+p4 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from OnTime)",x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot1: starting state= Ritardo nel lungo tempo
+p5<-plot(pt1_PostMi_offpeak, ord = ord, from=2, use.ggplot = TRUE, xlim = c(0,30))
+p5 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from Delay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot0: starting state= Ritardo nel lungo tempo
+p6<-plot(pt1_PostMi_offpeak, ord = ord, from=3, use.ggplot = TRUE, xlim = c(0,30))
+p6 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from SevereDelay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))
+
+#plot Pre-Milano & Peak Pome:
+p7<-plot(pt1_PostMi_peakp, ord = ord, from=1, use.ggplot = TRUE, xlim = c(0,30))
+p7 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from OnTime)",x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot1: starting state= Ritardo nel lungo tempo
+p8<-plot(pt1_PostMi_peakp, ord = ord, from=2, use.ggplot = TRUE, xlim = c(0,30))
+p8 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from Delay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot0: starting state= Ritardo nel lungo tempo
+p9<-plot(pt1_PostMi_peakp, ord = ord, from=3, use.ggplot = TRUE, xlim = c(0,30))
+p9 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from SevereDelay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))
+
+
+grid.arrange(p1 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From OnTime", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p2 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From Delay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p3 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From SevereDelay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p4 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From OnTime", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p5 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From Delay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p6 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From SevereDelay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p7 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From OnTime", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p8 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From Delay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p9 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From SevereDelay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             nrow= 3, ncol = 3)  # Questo imposta 2 colonne
+```
+
+3) Milano-Città & Fascia Oraria
+```{r}
+#Probabilità di transizione di lì a :
+pt1_Mi_peakm <- probtrans(msf1_Mi_peakm, predt = 0, method = "aalen")
+
+pt1_Mi_offpeak <- probtrans(msf1_Mi_offpeak, predt = 0, method = "aalen")
+
+pt1_Mi_peakp <- probtrans(msf1_Mi_peakp, predt = 0, method = "aalen")
+
+
+statecols <- c("#C3EEBF", "#FBDD88", "#E05265")
+ord <- c(1,2,3)
+#plot Pre-Milano & Peak Mattina: 
+p1<-plot(pt1_Mi_peakm, ord = ord, from=1, xlim=c(0,20), use.ggplot = TRUE)
+p1 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from OnTime)",x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot0: starting state= Ritardo nel lungo tempo
+p2<-plot(pt1_Mi_peakm, ord = ord, from=2, xlim=c(0,20), use.ggplot = TRUE)
+p2 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from Delay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot Peak: starting state= Ritardo nel lungo tempo
+p3<-plot(pt1_Mi_peakm, ord = ord, from=3, xlim=c(0,20), use.ggplot = TRUE)
+p3 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from SevereDelay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))
+
+#plot Pre-Milano & Off Peak:
+p4<-plot(pt1_Mi_offpeak, ord = ord, from=1, use.ggplot = TRUE)
+p4 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from OnTime)",x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot1: starting state= Ritardo nel lungo tempo
+p5<-plot(pt1_Mi_offpeak, ord = ord, from=2, use.ggplot = TRUE)
+p5 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from Delay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot0: starting state= Ritardo nel lungo tempo
+p6<-plot(pt1_Mi_offpeak, ord = ord, from=3, use.ggplot = TRUE)
+p6 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from SevereDelay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))
+
+#plot Pre-Milano & Peak Pome:
+p7<-plot(pt1_Mi_peakp, ord = ord, from=1, xlim=c(0,20), use.ggplot = TRUE)
+p7 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from OnTime)",x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot1: starting state= Ritardo nel lungo tempo
+p8<-plot(pt1_Mi_peakp, ord = ord, from=2, xlim=c(0,20), use.ggplot = TRUE)
+p8 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from Delay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))  # Modifica il titolo della legenda
+#plot0: starting state= Ritardo nel lungo tempo
+p9<-plot(pt1_Mi_peakp, ord = ord, from=3, xlim=c(0,20), use.ggplot = TRUE)
+p9 + 
+  scale_fill_manual(values = statecols) +
+  theme_minimal() + 
+  labs(title = "Transition Probabilities (starting from SevereDelay)", x = "Time (Minutes)", y = "Probability") +  # Aggiungi etichette
+  guides(fill = guide_legend(title = "States"))
+
+
+grid.arrange(p1 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From OnTime", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p2 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From Delay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p3 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From SevereDelay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p4 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From OnTime", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p5 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From Delay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p6 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From SevereDelay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p7 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From OnTime", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p8 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From Delay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             p9 + scale_fill_manual(values = statecols) +
+               theme_minimal() + 
+               labs(title = "From SevereDelay", 
+                    x = "Time (Minutes)", y = "Transition Probability") +
+               guides(fill = guide_legend(title = "States")),
+             
+             nrow= 3, ncol = 3)  # Questo imposta 2 colonne
+```
+
+
+AIC del modello:
+```{r}
+print("PreMi & FasciaOraria")
+AIC(c1_PreMi_peakm)
+AIC(c1_PreMi_offpeak)
+AIC(c1_PreMi_peakp)
+
+print("Mi & FasciaOraria")
+AIC(c1_Mi_peakm)
+AIC(c1_Mi_offpeak)
+AIC(c1_Mi_peakp)
+
+print("PostMi & FasciaOraria")
+AIC(c1_PostMi_peakm)
+AIC(c1_PostMi_offpeak)
+AIC(c1_PostMi_peakp)
+```
+
