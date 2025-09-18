@@ -1,0 +1,1135 @@
+---
+title: "Tesi_AbsDelay_S5_v1.1_dir1"
+output: html_document
+date: "2025-03-11"
+---
+
+STATE DEFINITION:
+0) OnTime: Arrival Delay <= 5min
+1) Delay: 5min < Arrival Delay <= 10min
+2) Severe Delay: Arrival Delay > 10min
+
+NB: 
+    A) DIRECTION 0:
+       - PreMi1: from Varese to Gallarate;
+       - PreMi2: from Busto Arsizio to Rho Fiera;
+       - Mi: from Milano Certosa to Milano Forlanini;
+       - PostMi: from Segrate to Treviglio.
+    B)  DIRECION 1:
+       - PreMi: from Treviglio to Segrate;
+       - Mi: from Milano Forlanini to Milano Certosa;
+       - PostMi1: from Rho Fiera to Busto Arsizio;
+       - PostMi2: from Gallarate to Varese.
+
+Additional information:
+- we consider 3 months (September, October, November)
+- Only S5 line (from Varese to Treviglio and vice versa)
+- The dataset is a combination of 3 main sources: Operational data from Trenord, Weather conditions and Custom frequency indicators.
+
+
+# Libraries and Dataset --------------------------------------------------------
+```{r}
+# Loading necessary libraries
+library(survival)
+library(survminer)
+library(dplyr) 
+library(ggplot2)
+library(knitr)
+library(broom)
+library(tidyr)
+library(mstate)
+library(msm)
+library(timechange)
+library(lubridate)
+library("colorspace")
+library(frailtypack)
+library(gridExtra)
+library(survidm)
+library(flexsurv)
+library(muhaz)
+library(gridExtra)
+
+
+data=read.csv("Data/train.csv")
+data$date=as.Date(data$date, format = "%d/%m/%Y")
+data$departure=as.POSIXct(data$departure, format = "%d/%m/%Y %H:%M:%S")
+data$arrival=as.POSIXct(data$arrival, format = "%d/%m/%Y %H:%M:%S")
+data$ora_entry_time=as.POSIXct(data$entry_time, format = "%d/%m/%Y %H:%M:%S")
+data$exit_time=as.POSIXct(data$exit_time, format = "%d/%m/%Y %H:%M:%S")
+str(data)
+# View(data)
+```
+
+
+## 3 MONTHS----
+
+Descriptive analysis reporting mean arrival delays (+- 2 std dev) for each train stop:
+```{r}
+# Usual stops (Station_list):
+# - Varese
+# - Gazzada
+# - Castronno
+# - Albizzate
+# - Cavaria
+# - Gallarate
+# - Busto
+# - Legnano
+# - Canegrate
+# - Parabiago
+# - Vanzago
+# - Rho
+# - Rho Fiera
+# - Mi Certosa
+# - Mi VIllapizzone
+# - Mi Lancetti
+# - Mi P. Garibaldi
+# - Mi Repubblica
+# - Mi P. Venezia
+# - Mi Dateo
+# - Mi P. Vittoria
+# - Mi Forlanini
+# - Segrate
+# - Pioltello
+# - Vignate
+# - Melzo
+# - Pozzuolo Martesana
+# - Trecella
+# - Cassano D'Adda
+# - Treviglio
+
+# Function to compute statistic quantities
+statistic_quantities <- function(subset_df) {
+  # Check if the entry time is different from the default one
+  if(all(subset_df$entry_time != as.POSIXct("1970-01-01 01:00:00"))) {
+    mean_delay <- mean(subset_df$entry_time, na.rm = TRUE)
+    sd_delay <- sd(subset_df$entry_time, na.rm = TRUE)
+  } else {
+    mean_delay <- mean(subset_df$entry_time, na.rm = TRUE)
+    sd_delay <- sd(subset_df$entry_time, na.rm = TRUE)
+  }
+
+  lower_bound <- mean_delay - 2 * sd_delay
+  upper_bound <- mean_delay + 2 * sd_delay
+
+  return(tibble(
+    station = unique(subset_df$station),
+    time_slot = unique(subset_df$time_slot),
+    direction = unique(subset_df$direction),
+    mean_delay = mean_delay,
+    sd_delay = sd_delay,
+    lower_bound = lower_bound,
+    upper_bound = upper_bound
+  ))
+}
+
+# Group data based on station, time slot, direction and apply the function
+result <- data_S5 %>%
+  group_by(name, time_slot, direction) %>%
+  do(statistic_quantities(.))
+
+# Convert results in minutes
+result <- result %>%
+  mutate(
+    mean_delay = mean_delay / 60,
+    sd_delay = sd_delay / 60,
+    lower_bound = lower_bound / 60,
+    upper_bound = upper_bound / 60
+  )
+
+View(result)
+
+
+#Plot 0:
+result$name <- factor(result$name, levels = Station_list)
+
+# Filter results for direction 0
+result_direzione_0 <- result %>% filter(direction == 0)
+
+# Plot for direction 0
+ggplot(result_direction_0, aes(x = nome, y = mean_delay, group = time_slot, color = time_slot)) +
+  geom_line(linewidth = 1) + 
+  geom_ribbon(aes(ymin = lower_bound, ymax = upper_bound, fill = time_slot), alpha = 0.3) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("Morning-Peak Time" = "#87CEFA", 
+                               "Evening-Peak Time" = "#F59B51", 
+                               "Off-Peak Time" = "#EB5C82")) +
+  scale_fill_manual(values = c("Morning-Peak Time" = "#C4E7FD", 
+                              "Evening-Peak Time" = "#F9C79F", 
+                              "Off-Peak Time" = "#F4A4B9")) +
+  theme_minimal() +
+  labs(
+    title = "Mean Delays - Direction 0",
+    x = "Station",
+    y = "Delay (min)",
+    color = "Time Slot",
+    fill = "Time Slot"
+  ) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+
+#Plot 1:
+risultato$nome <- factor(risultato$nome, levels = rev(Station_list))
+
+# Filter results for direction 1
+result_direction_1 <- result %>% filter(direction == 1)
+
+# Reverse station order
+result_direction_1 <- result_direction_1 %>%
+  mutate(name = factor(name, levels = rev(unique(name))))
+
+# Plot for direction 1
+ggplot(result_direction_1, aes(x = name, y = mean_delay, group = time_slot, color = time_slot)) +
+  geom_line(linewidth = 1) + 
+  geom_ribbon(aes(ymin = lower_bound, ymax = upper_bound, fill = time_slot), alpha = 0.3) +
+  geom_point(size = 2) +
+  scale_color_manual(values = c("Morning-Peak Time" = "#87CEFA", 
+                               "Evening-Peak Time" = "#F59B51", 
+                               "Off-Peak Time" = "#EB5C82")) +
+  scale_fill_manual(values = c("Morning-Peak Time" = "#C4E7FD", 
+                              "Evening-Peak Time" = "#F9C79F", 
+                              "Off-Peak Time" = "#F4A4B9")) +
+  theme_minimal() +
+  labs(
+    title = "Mean Delays - Direction 1",
+    x = "Station",
+    y = "Delay (min)",
+    color = "Time Slot",
+    fill = "Time Slot"
+  ) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+
+
+### NP for Direction 1: Time Slot ----
+
+Check events for each time slot:
+```{r}
+#Morning Peak:
+print("Morning Peak")
+events(msdata_1_peakm)
+length(unique(msdata_1_peakm$ID_Train))
+length(unique(msdata_1_peakm$ID_TrainRun))
+
+#Off Peak:
+print("Off Peak")
+events(msdata_1_offpeak)
+length(unique(msdata_1_offpeak$ID_Train))
+length(unique(msdata_1_offpeak$ID_TrainRun))
+
+#Evening Peak:
+print("Evening Peak")
+events(msdata_1_peakp)
+length(unique(msdata_1_peakp$ID_Train))
+length(unique(msdata_1_peakp$ID_TrainRun))
+```
+
+We construct a separate NP model for each time slot to properly identify specific time segmentations.
+```{r}
+#Morning Peak:
+c1_peakm<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_peakm, method = "breslow")
+msf1_peakm <- msfit(object = c1_peakm, vartype = "aalen", trans = tmat)
+summary(msf1_peakm)
+
+#Off Peak: 
+c1_offpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_offpeak, method = "breslow")
+msf1_offpeak <- msfit(object = c1_offpeak, vartype = "aalen", trans = tmat)
+summary(msf1_offpeak)
+
+#Evening Peak: 
+c1_peakp<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_peakp, method = "breslow")
+msf1_peakp <- msfit(object = c1_peakp, vartype = "aalen", trans = tmat)
+summary(msf1_peakp)
+```
+
+Construct Kaplan-Meier curves and plot them:
+```{r}
+#Survival in "OnTime" for each Time slot:
+msdata_1_peakm_ontime <- msdata_1_peakm[msdata_1_peakm$from == 1, ]
+msdata_1_offpeak_ontime <- msdata_1_offpeak[msdata_1_offpeak$from == 1, ]
+msdata_1_peakp_ontime <- msdata_1_peakp[msdata_1_peakp$from == 1, ]
+
+#Survival in "SevereDelay" for each Time slot:
+msdata_1_peakm_severedelay <- msdata_1_peakm[msdata_1_peakm$from == 3, ]
+msdata_1_offpeak_severedelay <- msdata_1_offpeak[msdata_1_offpeak$from == 3, ]
+msdata_1_peakp_severedelay <- msdata_1_peakp[msdata_1_peakp$from == 3, ]
+
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_1_ontime_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_peakm_ontime)
+kaplan_meier_1_ontime_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_peakp_ontime)
+kaplan_meier_1_ontime_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_offpeak_ontime)
+
+#SevereDelay
+kaplan_meier_1_severedelay_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_peakm_severedelay)
+kaplan_meier_1_severedelay_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_peakp_severedelay)
+kaplan_meier_1_severedelay_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_offpeak_severedelay)
+```
+
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_1_ontime_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, xlim=c(0,30), conf.int=FALSE)
+lines(kaplan_meier_1_ontime_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ontime_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+
+# Survival in SevereDelay:
+plot(kaplan_meier_1_severedelay_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim=c(0,30), conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+Transition probabilities:
+```{r}
+pt1_peakm <- probtrans(msf1_peakm, predt = 0, method = "aalen", variance = TRUE)
+pt1_offpeak <- probtrans(msf1_offpeak, predt = 0, method = "aalen", variance = TRUE)
+pt1_peakp <- probtrans(msf1_peakp, predt = 0, method = "aalen", variance = TRUE)
+
+pt_list <- list(
+  MorningPeak = pt1_peakm,
+  OffPeak     = pt1_offpeak,
+  EveningPeak = pt1_peakp
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#C3EEBF", "#FBDD88", "#E05265")
+ord <- c(1,2,3)
+make_plot <- function(pt_obj, from_state, timeslot_name, state_label) {
+  plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+    scale_fill_manual(values = statecols) +
+    theme_minimal() +
+    labs(
+      title = paste("From", state_label, "(", timeslot_name, ")"),
+      x = "Time (Minutes)",
+      y = "Transition Probability"
+    ) +
+    guides(fill = guide_legend(title = "States"))
+}
+plot_specs <- expand.grid(
+  timeslot = names(pt_list),
+  from = 1:3,
+  stringsAsFactors = FALSE
+)
+plots <- mapply(
+  function(timeslot, from) {
+    make_plot(
+      pt_obj = pt_list[[timeslot]],
+      from_state = from,
+      timeslot_name = timeslot,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$timeslot,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 3)
+```
+
+AIC and BIC:
+```{r}
+AIC(c1_peakm)
+AIC(c1_offpeak)
+AIC(c1_peakp)
+
+BIC(c1_peakm)
+BIC(c1_offpeak)
+BIC(c1_peakp)
+```
+
+ELOS: Expected Lenght of Stay
+Given a "probtrans" object, ELOS calculates the (restricted) expected length of stay in each of the states of the multi-state model.
+ELOS(pt, tau)
+The object pt needs to be a "probtrans" object, obtained with forward prediction. The restriction to tau is there because, as in ordinary survival analysis, the probability of being in a state can be positive until infinity, resulting in infinite values. The (restricted, until tau) expected length of stay in state h, given in state g at time s, is given by the integral from s to tau of P_gh(s,t).
+
+Bootstrap loop: used to obtain CI for each ELOS
+```{r}
+ELOS(pt1_peakm, 130)
+ELOS(pt1_offpeak, 130)
+ELOS(pt1_peakp, 130) #I use 130 since the planned time needed for the entire route is 120min
+
+bootstrap_elos <- function(data, B = 1000, max_time = 130, tmat) {
+  elos_boot <- matrix(NA, nrow = B, ncol = 3)  # cols = states
+  
+  set.seed(123)
+  for (i in 1:B) {
+    # Resample by id
+    sample_ids <- sample(unique(data$id), replace = TRUE)
+    boot_data <- do.call(rbind, lapply(sample_ids, function(id) data[data$id == id, ]))
+    
+    # Fit Cox
+    cox_boot <- coxph(Surv(time, status) ~ strata(trans), data = boot_data, method = "breslow")
+    msf_boot <- msfit(cox_boot, trans = tmat)
+    pt_boot  <- probtrans(msf_boot, predt = 0)
+    
+    # ELOS for each state
+    elos_vals <- diag(ELOS(pt_boot, max_time))
+    elos_boot[i, ] <- elos_vals[1:3]
+  }
+  
+  # Mean and CI
+  results <- apply(elos_boot, 2, function(x) {
+    c(mean = mean(x),
+      lower = quantile(x, 0.025),
+      upper = quantile(x, 0.975))
+  })
+  
+  return(t(results))
+}
+
+# Dataset list
+datasets <- list(
+  PeakMorning = msdata_1_peakm,
+  OffPeak     = msdata_1_offpeak,
+  PeakEvening = msdata_1_peakp
+)
+
+# Apply previous functon to all datesets
+results_all <- lapply(datasets, function(d) bootstrap_elos(d, B = 1000, max_time = 130, tmat = tmat))
+
+# Print
+for (timeslot in names(results_all)) {
+  cat("\n---", timeslot, "---\n")
+  res <- results_all[[timeslot]]
+  rownames(res) <- c("OnTime", "MildDelay", "SevereDelay")
+  print(round(res, 2))
+}
+```
+
+
+### NP for Direction 1: Route Section ----
+
+Check events for each route segment:
+```{r}
+#Pre-Milano:
+print("Pre-Milano")
+events(msdata_1_cov_PreMi)
+length(unique(msdata_1_cov_PreMi$ID_Train))
+length(unique(msdata_1_cov_PreMi$ID_TrainRun))
+
+#Milano:
+print("Milano")
+events(msdata_1_cov_Mi)
+length(unique(msdata_1_cov_Mi$ID_Train))
+length(unique(msdata_1_cov_Mi$ID_TrainRun))
+
+#Post-Milano.1:
+print("Post-Milano.1")
+events(msdata_1_cov_PostMi.1)
+length(unique(msdata_1_cov_PostMi.1$ID_Train))
+length(unique(msdata_1_cov_PostMi.1$ID_TrainRun))
+
+#Post-Milano.2:
+print("Post-Milano.2")
+events(msdata_1_cov_PostMi.2)
+length(unique(msdata_1_cov_PostMi.2$ID_Train))
+length(unique(msdata_1_cov_PostMi.2$ID_TrainRun))
+```
+
+We construct a separate NP model for each route segment to properly identify specific zone segmentations.
+```{r}
+#Pre-Milano:
+c1_PreMi<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_cov_PreMi, method = "breslow")
+msf1_PreMi <- msfit(object = c1_PreMi, vartype = "aalen", trans = tmat)
+summary(msf1_PreMi)
+
+#Milano: 
+c1_Mi<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_cov_Mi, method = "breslow")
+msf1_Mi <- msfit(object = c1_Mi, vartype = "aalen", trans = tmat)
+summary(msf1_Mi)
+
+#Post-Milano.1: 
+c1_PostMi.1<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_cov_PostMi.1, method = "breslow")
+msf1_PostMi.1 <- msfit(object = c1_PostMi.1, vartype = "aalen", trans = tmat)
+summary(msf0_PostMi.1)
+
+#Post-Milano.2: 
+c1_PostMi.2<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_cov_PostMi.2, method = "breslow")
+msf1_PostMi.2 <- msfit(object = c1_PostMi.2, vartype = "aalen", trans = tmat)
+summary(msf0_PostMi.2)
+```
+
+Construct Kaplan-Meier curves and plot them:
+```{r}
+#Survival in "OnTime" for each Route Section:
+msdata_1_PreMi_ontime <- msdata_1_cov_PreMi[msdata_1_cov_PreMi$from == 1, ]
+msdata_1_Mi_ontime <- msdata_1_cov_Mi[msdata_1_cov_Mi$from == 1, ]
+msdata_1_PostMi.1_ontime <- msdata_1_cov_PostMi.1[msdata_1_cov_PostMi.1$from == 1, ]
+msdata_1_PostMi.2_ontime <- msdata_1_cov_PostMi.2[msdata_1_cov_PostMi.2$from == 1, ]
+
+#Survival in "SevereDelay" for each Route Section:
+msdata_1_PreMi_severedelay <- msdata_1_cov_PreMi[msdata_1_cov_PreMi$from == 3, ]
+msdata_1_Mi_severedelay <- msdata_1_cov_Mi[msdata_1_cov_Mi$from == 3, ]
+msdata_1_PostMi.1_severedelay <- msdata_1_cov_PostMi.1[msdata_1_cov_PostMi.1$from == 3, ]
+msdata_1_PostMi.2_severedelay <- msdata_1_cov_PostMi.2[msdata_1_cov_PostMi.2$from == 3, ]
+
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_1_ontime_PreMi <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_ontime)
+kaplan_meier_1_ontime_Mi <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_ontime)
+kaplan_meier_1_ontime_PostMi.1 <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.1_ontime)
+kaplan_meier_1_ontime_PostMi.2 <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.2_ontime)
+
+#SevereDelay
+kaplan_meier_1_severedelay_PreMi.1 <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi.1_severedelay)
+kaplan_meier_1_severedelay_Mi <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_severedelay)
+kaplan_meier_1_severedelay_PostMi.1 <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.1_severedelay)
+kaplan_meier_1_severedelay_PostMi.2 <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.2_severedelay)
+```
+
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_1_ontime_PreMi, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim=c(0,30))
+lines(kaplan_meier_1_ontime_Mi, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ontime_PostMi.1, col = "#F59B51", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ontime_PostMi.2, col = "#00B88D", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Pre-Milano", "Milano", "Post-Milano.1", "Post-Milano.2"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51", "#00B88D"), bty = "n", lwd = 2, cex = 1.2)
+
+# Survival in SevereDelay:
+plot(kaplan_meier_1_severedelay_PreMi, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim = c(0, 10), conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_Mi, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_PostMi.1, col = "#F59B51", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_PostMi.2, col = "#00B88D", lwd = 2, conf.int=FALSE)
+```
+
+Transition probabilities:
+```{r}
+pt1_PreMi <- probtrans(msf1_PreMi, predt = 0, method = "aalen", variance = TRUE)
+pt1_Mi <- probtrans(msf1_Mi, predt = 0, method = "aalen", variance = TRUE)
+pt1_PostMi.1 <- probtrans(msf1_PostMi.1, predt = 0, method = "aalen", variance = TRUE)
+pt1_PostMi.2 <- probtrans(msf1_PostMi.2, predt = 0, method = "aalen", variance = TRUE)
+
+pt_list <- list(
+  PreMi = pt1_PreMi,
+  Mi = pt1_Mi,
+  PostMi.1 = pt1_PostMi.1,
+  PostMi.2 = pt1_PostMi.2
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#C3EEBF", "#FBDD88", "#E05265")
+ord <- c(1,2,3)
+make_plot <- function(pt_obj, from_state, routesec_name, state_label) {
+  plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+    scale_fill_manual(values = statecols) +
+    theme_minimal() +
+    labs(
+      title = paste("From", state_label, "(", routesec_name, ")"),
+      x = "Time (Minutes)",
+      y = "Transition Probability"
+    ) +
+    guides(fill = guide_legend(title = "States"))
+}
+plot_specs <- expand.grid(
+  routesec = names(pt_list),
+  from = 1:3,
+  stringsAsFactors = FALSE
+)
+plots <- mapply(
+  function(routesec, from) {
+    make_plot(
+      pt_obj = pt_list[[routesec]],
+      from_state = from,
+      routesec_name = routesec,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$routesec,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 4)
+```
+
+AIC and BIC:
+```{r}
+AIC(c1_PreMi)
+AIC(c1_Mi)
+AIC(c1_PostMi.1)
+AIC(c1_PostMi.2)
+
+BIC(c1_PreMi.1)
+BIC(c1_Mi)
+BIC(c1_PostMi.1)
+BIC(c1_PostMi.2)
+```
+
+ELOS: Expected Lenght of Stay
+Bootstrap loop: used to obtain CI for each ELOS
+```{r}
+ELOS(pt1_PreMi, 30)
+ELOS(pt1_Mi, 30)
+ELOS(pt1_PostMi.1, 30)
+ELOS(pt1_PostMi.2, 30)
+
+bootstrap_elos <- function(data, B = 1000, max_time = 30, tmat) {
+  elos_boot <- matrix(NA, nrow = B, ncol = 3)  # cols = states
+  
+  set.seed(123)
+  for (i in 1:B) {
+    # Resample by id
+    sample_ids <- sample(unique(data$id), replace = TRUE)
+    boot_data <- do.call(rbind, lapply(sample_ids, function(id) data[data$id == id, ]))
+    
+    # Fit Cox
+    cox_boot <- coxph(Surv(time, status) ~ strata(trans), data = boot_data, method = "breslow")
+    msf_boot <- msfit(cox_boot, trans = tmat)
+    pt_boot  <- probtrans(msf_boot, predt = 0)
+    
+    # ELOS for each state
+    elos_vals <- diag(ELOS(pt_boot, max_time))
+    elos_boot[i, ] <- elos_vals[1:3]
+  }
+  
+  # Mean and  CI
+  results <- apply(elos_boot, 2, function(x) {
+    c(mean = mean(x),
+      lower = quantile(x, 0.025),
+      upper = quantile(x, 0.975))
+  })
+  
+  return(t(results))
+}
+
+# Dataset list
+datasets <- list(
+  PreMi = msdata_1_cov_PreMi,
+  Mi = msdata_1_cov_Mi,
+  PostMi.1 = msdata_1_cov_PostMi.1,
+  PostMi.2 = msdata_1_cov_PostMi.2
+)
+
+# Apply previous function to all datesets
+results_all <- lapply(datasets, function(d) bootstrap_elos(d, B = 1000, max_time = 130, tmat = tmat))
+
+# Print results
+for (timeslot in names(results_all)) {
+  cat("\n---", timeslot, "---\n")
+  res <- results_all[[timeslot]]
+  rownames(res) <- c("OnTime", "MildDelay", "SevereDelay")
+  print(round(res, 2))
+}
+```
+
+
+### NP for Direction 1: Time Slot & Route Section ----
+
+Select the correct portion of the datasets:
+```{r}
+#Pre-Milano & Time Slot:
+msdata_1_PreMi_peakm<-msdata_1_cov_PreMi[msdata_1_cov_PreMi$time_slot=="Morning-Peak Time", ]
+msdata_1_PreMi_offpeak<-msdata_1_cov_PreMi[msdata_1_cov_PreMi$time_slot=="Off-Peak Time", ]
+msdata_1_PreMi_peakp<-msdata_1_cov_PreMi[msdata_1_cov_PreMi$time_slot=="Evening-Peak Time", ]
+
+#Milano & Time Slot:
+msdata_1_Mi_peakm<-msdata_1_cov_Mi[msdata_1_cov_Mi$time_slot=="Morning-Peak Time", ]
+msdata_1_Mi_offpeak<-msdata_1_cov_Mi[msdata_1_cov_Mi$time_slot=="Off-Peak Time", ]
+msdata_1_Mi_peakp<-msdata_1_cov_Mi[msdata_1_cov_Mi$time_slot=="Evening-Peak Time", ]
+
+#Post-Milano & Time Slot:
+msdata_1_PostMi_peakm<-msdata_1_cov_PostMi[msdata_1_cov_PostMi$time_slot=="Morning-Peak Time", ]
+msdata_1_PostMi_offpeak<-msdata_1_cov_PostMi[msdata_1_cov_PostMi$time_slot=="Off-Peak Time", ]
+msdata_1_PostMi_peakp<-msdata_1_cov_PostMi[msdata_1_cov_PostMi$time_slot=="Evening-Peak Time", ]
+```
+
+Check events:
+```{r}
+#Pre-Milano & Time Slot:
+print("Pre-Milano & MorningPeak")
+events(msdata_1_PreMi_peakm)
+print("Pre-Milano & OffPeak")
+events(msdata_1_PreMi_offpeak)
+print("Pre-Milano & EveningPeak")
+events(msdata_1_PreMi_peakp)
+
+#Milano & Time Slot:
+print("Milano & MorningPeak")
+events(msdata_1_Mi_peakm)
+print("Milano & OffPeak")
+events(msdata_1_Mi_offpeak)
+print("Milano & EveningPeak")
+events(msdata_1_Mi_peakp)
+
+#Post-Milano.1 & Time Slot:
+print("Post-Milano.1 & MorningPeak")
+events(msdata_1_PostMi.1_peakm)
+print("Post-Milano.1 & OffPeak")
+events(msdata_1_PostMi.1_offpeak)
+print("Post-Milano.1 & EveningPeak")
+events(msdata_1_PostMi.1_peakp)
+
+#Post-Milano.2 & Time Slot:
+print("Post-Milano.2 & MorningPeak")
+events(msdata_1_PostMi.2_peakm)
+print("Post-Milano.2 & OffPeak")
+events(msdata_1_PostMi.2_offpeak)
+print("Post-Milano.2 & EveningPeak")
+events(msdata_1_PostMi.2_peakp)
+```
+
+NP model for each combination:
+```{r}
+#Pre-Milano.1 & TimeSlot:
+c1_PreMi_peakm<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_PreMi_peakm, method = "breslow")
+msf1_PreMi_peakm <- msfit(object = c1_PreMi_peakm, vartype = "aalen", trans = tmat)
+summary(msf1_PreMi_peakm)
+
+c1_PreMi_offpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_PreMi_offpeak, method = "breslow")
+msf1_PreMi_offpeak <- msfit(object = c1_PreMi_offpeak, vartype = "aalen", trans = tmat)
+summary(msf1_PreMi_offpeak)
+
+c1_PreMi_peakp<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_PreMi_peakp, method = "breslow")
+msf1_PreMi_peakp <- msfit(object = c1_PreMi_peakp, vartype = "aalen", trans = tmat)
+summary(msf1_PreMi_peakp)
+
+
+#Milano & Time Slot: 
+c1_Mi_peakm<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Mi_peakm, method = "breslow")
+msf1_Mi_peakm <- msfit(object = c1_Mi_peakm, vartype = "aalen", trans = tmat)
+summary(msf1_Mi_peakm)
+
+c1_Mi_offpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Mi_offpeak, method = "breslow")
+msf1_Mi_offpeak <- msfit(object = c1_Mi_offpeak, vartype = "aalen", trans = tmat)
+summary(msf1_Mi_offpeak)
+
+c1_Mi_peakp<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Mi_peakp, method = "breslow")
+msf1_Mi_peakp <- msfit(object = c1_Mi_peakp, vartype = "aalen", trans = tmat)
+summary(msf1_Mi_peakp)
+
+
+#Post-Milano.1 & Time Slot: 
+c1_PostMi.1_peakm<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_PostMi.1_peakm, method = "breslow")
+msf1_PostMi.1_peakm <- msfit(object = c1_PostMi.1_peakm, vartype = "aalen", trans = tmat)
+summary(msf1_PostMi.1_peakm)
+
+c1_PostMi.1_offpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_PostMi.1_offpeak, method = "breslow")
+msf1_PostMi.1_offpeak <- msfit(object = c1_PostMi.1_offpeak, vartype = "aalen", trans = tmat)
+summary(msf1_PostMi.1_offpeak)
+
+c1_PostMi.1_peakp<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_PostMi.1_peakp, method = "breslow")
+msf1_PostMi.1_peakp <- msfit(object = c1_PostMi.1_peakp, vartype = "aalen", trans = tmat)
+summary(msf1_PostMi.1_peakp)
+
+
+#Post-Milano.2 & Time Slot: 
+c1_PostMi.2_peakm<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_PostMi.2_peakm, method = "breslow")
+msf1_PostMi.2_peakm <- msfit(object = c1_PostMi.2_peakm, vartype = "aalen", trans = tmat)
+summary(msf1_PostMi.2_peakm)
+
+c1_PostMi.2_offpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_PostMi.2_offpeak, method = "breslow")
+msf1_PostMi.2_offpeak <- msfit(object = c1_PostMi.2_offpeak, vartype = "aalen", trans = tmat)
+summary(msf1_PostMi.2_offpeak)
+
+c1_PostMi.2_peakp<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_PostMi.2_peakp, method = "breslow")
+msf1_PostMi.2_peakp <- msfit(object = c1_PostMi.2_peakp, vartype = "aalen", trans = tmat)
+summary(msf1_PostMi.2_peakp)
+```
+
+Compute and plot Kaplan-Meier curves:
+```{r}
+#PRE-MILANO & TIME SLOT
+#Survival in OnTime for each group:
+msdata_1_PreMi_peakm_ontime <- msdata_1_PreMi_peakm[msdata_1_PreMi_peakm$from == 1, ]
+msdata_1_PreMi_offpeak_ontime <- msdata_1_PreMi_offpeak[msdata_1_PreMi_offpeak$from == 1, ]
+msdata_1_PreMi_peakp_ontime <- msdata_1_PreMi_peakp[msdata_1_PreMi_peakp$from == 1, ]
+
+#Survival in SevereDelay for each group:
+msdata_1_PreMi_peakm_severedelay <- msdata_1_PreMi_peakm[msdata_1_PreMi_peakm$from == 3, ]
+msdata_1_PreMi_offpeak_severedelay <- msdata_1_PreMi_offpeak[msdata_1_PreMi_offpeak$from == 3, ]
+msdata_1_PreMi_peakp_severedelay <- msdata_1_PreMi_peakp[msdata_1_PreMi_peakp$from == 3, ]
+
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_1_ontime_PreMi_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_peakm_ontime)
+kaplan_meier_1_ontime_PreMi_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_offpeak_ontime)
+kaplan_meier_1_ontime_PreMi_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_peakp_ontime)
+
+#SevereDelay
+kaplan_meier_1_severedelay_PreMi_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_peakm_severedelay)
+kaplan_meier_1_severedelay_PreMi_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_offpeak_severedelay)
+kaplan_meier_1_severedelay_PreMi_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_PreMi_peakp_severedelay)
+
+
+
+#MILANO & TIME SLOT
+#Survival in OnTime for each group:
+msdata_1_Mi_peakm_ontime <- msdata_1_Mi_peakm[msdata_1_Mi_peakm$from == 1, ]
+msdata_1_Mi_offpeak_ontime <- msdata_1_Mi_offpeak[msdata_1_Mi_offpeak$from == 1, ]
+msdata_1_Mi_peakp_ontime <- msdata_1_Mi_peakp[msdata_1_Mi_peakp$from == 1, ]
+
+#Survival in SevereDelay for each group:
+msdata_1_Mi_peakm_severedelay <- msdata_1_Mi_peakm[msdata_1_Mi_peakm$from == 3, ]
+msdata_1_Mi_offpeak_severedelay <- msdata_1_Mi_offpeak[msdata_1_Mi_offpeak$from == 3, ]
+msdata_1_Mi_peakp_severedelay <- msdata_1_Mi_peakp[msdata_1_Mi_peakp$from == 3, ]
+
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_1_ontime_Mi_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_peakm_ontime)
+kaplan_meier_1_ontime_Mi_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_offpeak_ontime)
+kaplan_meier_1_ontime_Mi_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_peakp_ontime)
+
+#SevereDelay
+kaplan_meier_1_severedelay_Mi_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_peakm_severedelay)
+kaplan_meier_1_severedelay_Mi_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_offpeak_severedelay)
+kaplan_meier_1_severedelay_Mi_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_Mi_peakp_severedelay)
+
+
+
+#POST-MILANO.1 & TIME SLOT
+#Survival in OnTime for each group:
+msdata_1_PostMi.1_peakm_ontime <- msdata_1_PostMi.1_peakm[msdata_1_PostMi.1_peakm$from == 1, ]
+msdata_1_PostMi.1_offpeak_ontime <- msdata_1_PostMi.1_offpeak[msdata_1_PostMi.1_offpeak$from == 1, ]
+msdata_1_PostMi.1_peakp_ontime <- msdata_1_PostMi.1_peakp[msdata_1_PostMi.1_peakp$from == 1, ]
+
+#Survival in SevereDelay for each group:
+msdata_1_PostMi.1_peakm_severedelay <- msdata_1_PostMi.1_peakm[msdata_1_PostMi.1_peakm$from == 3, ]
+msdata_1_PostMi.1_offpeak_severedealy <- msdata_1_PostMi.1_offpeak[msdata_1_PostMi.1_offpeak$from == 3, ]
+msdata_1_PostMi.1_peakp_severedelay <- msdata_1_PostMi.1_peakp[msdata_1_PostMi.1_peakp$from == 3, ]
+
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_1_ontime_PostMi.1_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.1_peakm_ontime)
+kaplan_meier_1_ontime_PostMi.1_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.1_offpeak_ontime)
+kaplan_meier_1_ontime_PostMi.1_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.1_peakp_ontime)
+
+#SevereDelay
+kaplan_meier_1_severedelay_PostMi.1_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.1_peakm_severedelay)
+kaplan_meier_1_severedelay_PostMi.1_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.1_offpeak_severdelay)
+kaplan_meier_1_severedelay_PostMi.1_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.1_peakp_severdelay)
+
+
+
+#POST-MILANO.2 & TIME SLOT
+#Survival in OnTime for each group:
+msdata_1_PostMi.2_peakm_ontime <- msdata_1_PostMi.2_peakm[msdata_1_PostMi.2_peakm$from == 1, ]
+msdata_1_PostMi.2_offpeak_ontime <- msdata_1_PostMi.2_offpeak[msdata_1_PostMi.2_offpeak$from == 1, ]
+msdata_1_PostMi.2_peakp_ontime <- msdata_1_PostMi.2_peakp[msdata_1_PostMi.2_peakp$from == 1, ]
+
+#Survival in SevereDelay for each group:
+msdata_1_PostMi.2_peakm_severedelay <- msdata_1_PostMi.2_peakm[msdata_1_PostMi.2_peakm$from == 3, ]
+msdata_1_PostMi.2_offpeak_severedealy <- msdata_1_PostMi.2_offpeak[msdata_1_PostMi.2_offpeak$from == 3, ]
+msdata_1_PostMi.2_peakp_severedelay <- msdata_1_PostMi.2_peakp[msdata_1_PostMi.2_peakp$from == 3, ]
+
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_1_ontime_PostMi.2_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.2_peakm_ontime)
+kaplan_meier_1_ontime_PostMi.2_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.2_offpeak_ontime)
+kaplan_meier_1_ontime_PostMi.2_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.2_peakp_ontime)
+
+#SevereDelay
+kaplan_meier_1_severedelay_PostMi.2_peakm <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.2_peakm_severedelay)
+kaplan_meier_1_severedelay_PostMi.2_offpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.2_offpeak_severdelay)
+kaplan_meier_1_severedelay_PostMi.2_peakp <- survfit(Surv(time, status) ~ 1, data = msdata_1_PostMi.2_peakp_severdelay)
+```
+
+1) PreMilano & Time Slot
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_1_ontime_PreMi_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim = c(0,20))
+lines(kaplan_meier_1_ontime_PreMi_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ontime_PreMi_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+# Survival in SevereDelay:
+plot(kaplan_meier_1_severedelay_PreMi_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim = c(0, 10), conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_PreMi_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_PreMi_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+2) Milano & Time Slot
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_1_ontime_Mi_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim = c(0, 20))
+lines(kaplan_meier_1_ontime_Mi_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ontime_Mi_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+# Survival in SevereDelay:
+plot(kaplan_meier_1_severedelay_Mi_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2,, xlim = c(0, 20), conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_Mi_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_Mi_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+3) Post-Milano.1 & Time Slot
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_1_ontime_PostMi.1_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim = c(0,15))
+lines(kaplan_meier_1_ontime_PostMi.1_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ontime_PostMi.1_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+# Survival in SevereDelay:
+plot(kaplan_meier_1_severedelay_PostMi.1_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim = c(0,15))
+lines(kaplan_meier_1_severedelay_PostMi.1_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_PostMi.1_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+4) Post-Milano.2 & Time Slot
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_1_ontime_PostMi.2_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim = c(0,15))
+lines(kaplan_meier_1_ontime_PostMi.2_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ontime_PostMi.2_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+# Survival in SevereDelay:
+plot(kaplan_meier_1_severedelay_PostMi.2_peakm, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim = c(0,15))
+lines(kaplan_meier_1_severedelay_PostMi.2_offpeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_PostMi.2_peakp, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+Compute Transition Probabilities:
+1) Pre-Milano & Time Slot
+```{r}
+pt1_PreMi_peakm <- probtrans(msf1_PreMi_peakm, predt = 0, method = "aalen")
+pt1_PreMi_offpeak <- probtrans(msf1_PreMi_offpeak, predt = 0, method = "aalen")
+pt1_PreMi_peakp <- probtrans(msf1_PreMi_peakp, predt = 0, method = "aalen")
+
+pt_list <- list(
+  PreMi_peakm = pt1_PreMi_peakm,
+  PreMi_offpeak = pt1_PreMi_offpeak,
+  PreMi_peakp = pt1_PreMi_peakp
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#C3EEBF", "#FBDD88", "#E05265")
+ord <- c(1,2,3)
+make_plot <- function(pt_obj, from_state, scenario_name, state_label) {
+  plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+    scale_fill_manual(values = statecols) +
+    theme_minimal() +
+    labs(
+      title = paste("From", state_label, "(", scenario_name, ")"),
+      x = "Time (Minutes)",
+      y = "Transition Probability"
+    ) +
+    guides(fill = guide_legend(title = "States"))
+}
+plot_specs <- expand.grid(
+  scenario = names(pt_list),
+  from = 1:3,
+  stringsAsFactors = FALSE
+)
+plots <- mapply(
+  function(scenario, from) {
+    make_plot(
+      pt_obj = pt_list[[scenario]],
+      from_state = from,
+      scenario_name = scenario,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$scenario,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 3)
+```
+
+2) Milano & Time Slot
+```{r}
+pt1_Mi_peakm <- probtrans(msf1_Mi_peakm, predt = 0, method = "aalen")
+pt1_Mi_offpeak <- probtrans(msf1_Mi_offpeak, predt = 0, method = "aalen")
+pt1_Mi_peakp <- probtrans(msf1_Mi_peakp, predt = 0, method = "aalen")
+
+pt_list <- list(
+  Mi_peakm = pt1_Mi_peakm,
+  Mi_offpeak = pt1_Mi_offpeak,
+  Mi_peakp = pt1_Mi_peakp
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#C3EEBF", "#FBDD88", "#E05265")
+ord <- c(1,2,3)
+make_plot <- function(pt_obj, from_state, scenario_name, state_label) {
+  plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+    scale_fill_manual(values = statecols) +
+    theme_minimal() +
+    labs(
+      title = paste("From", state_label, "(", scenario_name, ")"),
+      x = "Time (Minutes)",
+      y = "Transition Probability"
+    ) +
+    guides(fill = guide_legend(title = "States"))
+}
+plot_specs <- expand.grid(
+  scenario = names(pt_list),
+  from = 1:3,
+  stringsAsFactors = FALSE
+)
+plots <- mapply(
+  function(scenario, from) {
+    make_plot(
+      pt_obj = pt_list[[scenario]],
+      from_state = from,
+      scenario_name = scenario,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$scenario,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 3)
+```
+
+3) Post-Milano.1 & Time Slot
+```{r}
+pt1_PostMi.1_peakm <- probtrans(msf1_PostMi.1_peakm, predt = 0, method = "aalen")
+pt1_PostMi.1_offpeak <- probtrans(msf1_PostMi.1_offpeak, predt = 0, method = "aalen")
+pt1_PostMi.1_peakp <- probtrans(msf1_PostMi.1_peakp, predt = 0, method = "aalen")
+
+pt_list <- list(
+  PostMi.1_peakm = pt1_PostMi.1_peakm,
+  PostMi.1_offpeak = pt1_PostMi.1_offpeak,
+  PostMi.1_peakp = pt1_PostMi.1_peakp
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#C3EEBF", "#FBDD88", "#E05265")
+ord <- c(1,2,3)
+make_plot <- function(pt_obj, from_state, scenario_name, state_label) {
+  plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+    scale_fill_manual(values = statecols) +
+    theme_minimal() +
+    labs(
+      title = paste("From", state_label, "(", scenario_name, ")"),
+      x = "Time (Minutes)",
+      y = "Transition Probability"
+    ) +
+    guides(fill = guide_legend(title = "States"))
+}
+plot_specs <- expand.grid(
+  scenario = names(pt_list),
+  from = 1:3,
+  stringsAsFactors = FALSE
+)
+plots <- mapply(
+  function(scenario, from) {
+    make_plot(
+      pt_obj = pt_list[[scenario]],
+      from_state = from,
+      scenario_name = scenario,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$scenario,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 3)
+```
+
+4) Post-Milano.2 & Time Slot
+```{r}
+pt1_PostMi.2_peakm <- probtrans(msf1_PostMi.2_peakm, predt = 0, method = "aalen")
+pt1_PostMi.2_offpeak <- probtrans(msf1_PostMi.2_offpeak, predt = 0, method = "aalen")
+pt1_PostMi.2_peakp <- probtrans(msf1_PostMi.2_peakp, predt = 0, method = "aalen")
+
+pt_list <- list(
+  PostMi.2_peakm = pt1_PostMi.2_peakm,
+  PostMi.2_offpeak = pt1_PostMi.2_offpeak,
+  PostMi.2_peakp = pt1_PostMi.2_peakp
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#C3EEBF", "#FBDD88", "#E05265")
+ord <- c(1,2,3)
+make_plot <- function(pt_obj, from_state, scenario_name, state_label) {
+  plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+    scale_fill_manual(values = statecols) +
+    theme_minimal() +
+    labs(
+      title = paste("From", state_label, "(", scenario_name, ")"),
+      x = "Time (Minutes)",
+      y = "Transition Probability"
+    ) +
+    guides(fill = guide_legend(title = "States"))
+}
+plot_specs <- expand.grid(
+  scenario = names(pt_list),
+  from = 1:3,
+  stringsAsFactors = FALSE
+)
+plots <- mapply(
+  function(scenario, from) {
+    make_plot(
+      pt_obj = pt_list[[scenario]],
+      from_state = from,
+      scenario_name = scenario,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$scenario,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 3)
+```
+
+AIC and BIC:
+```{r}
+print("PreMi & Time Slot")
+AIC(c1_PreMi_peakm)
+AIC(c1_PreMi_offpeak)
+AIC(c1_PreMi_peakp)
+BIC(c1_PreMi_peakm)
+BIC(c1_PreMi_offpeak)
+BIC(c1_PreMi_peakp)
+
+print("Mi & Time Slot")
+AIC(c1_Mi_peakm)
+AIC(c1_Mi_offpeak)
+AIC(c1_Mi_peakp)
+BIC(c1_Mi_peakm)
+BIC(c1_Mi_offpeak)
+BIC(c1_Mi_peakp)
+
+print("PostMi.1 & Time Slot")
+AIC(c1_PostMi.1_peakm)
+AIC(c1_PostMi.1_offpeak)
+AIC(c1_PostMi.1_peakp)
+BIC(c1_PostMi.1_peakm)
+BIC(c1_PostMi.1_offpeak)
+BIC(c1_PostMi.1_peakp)
+
+print("PostMi.2 & Time Slot")
+AIC(c1_PostMi.2_peakm)
+AIC(c1_PostMi.2_offpeak)
+AIC(c1_PostMi.2_peakp)
+BIC(c1_PostMi.2_peakm)
+BIC(c1_PostMi.2_offpeak)
+BIC(c1_PostMi.2_peakp)
+```
+
