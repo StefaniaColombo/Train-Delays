@@ -1,8 +1,8 @@
 # Train-Delays
-Code associated to the thesis "From Delays to Dynamics: Multi-state Modeling in Suburban Rail Transport" authored by Stefania Colombo, and supervised by Francesca Ieva, Simone Vantini and Alfredo Gimenez Zapiola.
+Code associated to the paper "Multi-state Modeling of Delay Evolution in Suburban Rail Transports" authored by Stefania Colombo, Alfredo Gimenez Zapiola, Francesca Ieva and Simone Vantini.
 
 ## Outline
-This thesis applies continuous-time multi-state models to analize delay evolution on the S5 suburban line in Lombardy, Italy. Using detailed operational, meteorological, and contextual data, the study models delay transitions while accounting for structural heterogeneity.
+This article applies continuous-time multi-state models to analize delay evolution on the S5 suburban line in Lombardy, Italy. Using detailed operational, meteorological, and contextual data, the study models delay transitions while accounting for structural heterogeneity.
 
 In particular:
 - Scripts `preprocessing.R` reports data preprocessing;
