@@ -12,4 +12,4 @@ In particular:
 The code is developed in R (version 4.3.2).
 
 ## Data and Resources
-Due to confidentiality agreements, the Trenord data and the weather records are not available. The artificial dataset `data.csv` is produced for demonstrative purposes, which, however, has no relationship with the actual data about railway movements and weather conditions in 2023.
+Due to confidentiality agreements, the Trenord data and the weather records are not available. The artificial dataset `synth_data.csv` is produced for demonstrative purposes, which, however, has no relationship with the actual data about railway movements and weather conditions in 2023.
