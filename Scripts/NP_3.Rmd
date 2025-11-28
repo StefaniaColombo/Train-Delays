@@ -1,0 +1,1969 @@
+---
+title: "Nonparametric Models - 3 States"
+output: html_document
+date: "2024-11-26"
+---
+
+STATE DEFINITION:
+0) OnTime: Arrival Delay <= 5min
+1) Delay: 5min < Arrival Delay <= 10min
+2) Severe Delay: Arrival Delay > 10min
+
+RMK.1:
+   - Morning-Peak Time: 6a.m.-10a.m.
+   - Off-Peak Time    : 10a.m.-4p.m.
+   - Evening-Peak Time: 4p.m.-8p.m.
+
+RMK.2:
+   - Zone 1: from Varese to Gallarate;
+   - Zone 2: from Busto Arsizio to Rho Fiera;
+   - Zone 3: from Milano Certosa to Milano Forlanini;
+   - Zone 4: from Segrate to Treviglio.
+
+Additional information:
+- we consider 3 months (September, October, November) during 2023
+- Only S5 line (from Varese to Treviglio and vice versa)
+- The dataset is a combination of 3 main sources: Operational data from Trenord, Weather conditions and Custom frequency indicators.
+
+
+# Libraries --------------------------------------------------------------------
+```{r}
+# Loading necessary libraries
+library(survival)
+library(survminer)
+library(dplyr) 
+library(ggplot2)
+library(knitr)
+library(broom)
+library(tidyr)
+library(mstate)
+library(msm)
+library(timechange)
+library(lubridate)
+library("colorspace")
+library(frailtypack)
+library(gridExtra)
+library(survidm)
+library(flexsurv)
+library(muhaz)
+library(gridExtra)
+```
+
+
+# Varese-Treviglio (S5) Line ---------------------------------------------------
+## Segmentation ----
+We consider only 3 months: September, October and November 2023 and split the to traveling directions.
+```{r}
+msdata_cov$date=as.Date(msdata_cov$date, format = "%Y-%m-%d")
+msdata_cov$departure=as.POSIXct(msdata_cov$departure, format = "%Y-%m-%d %H:%M:%S")
+msdata_cov$arrival=as.POSIXct(msdata_cov$arrival, format = "%Y-%m-%d %H:%M:%S")
+
+#Direction 0 (Va-Tre) with covariates:
+msdata_0_cov<-msdata_cov[msdata_cov$direction==0,]
+
+#Direction 1 (Tre-Va) with covariates:
+msdata_1_cov<-msdata_cov[msdata_cov$direction==1,]
+```
+
+Preliminary analysis for direction 0:
+```{r}
+#Convert time (sec) into minutes:
+msdata_0_cov[, c("Tstart", "Tstop", "time")] <- msdata_0_cov[, c("Tstart", "Tstop", "time")]/60
+
+events(msdata_0_cov)
+```
+
+Preliminary analysis for direction 1:
+```{r}
+#Convert time (sec) into minutes:
+msdata_1_cov[, c("Tstart", "Tstop", "time")] <- msdata_1_cov[, c("Tstart", "Tstop", "time")]/60
+
+events(msdata_1_cov)
+```
+
+Apply segmentations based on Time slot and Route section in each dataset.
+```{r}
+#DIRECTION 0:
+#Time slot:
+msdata_0_mpeak<-msdata_0_cov[msdata_0_cov$time_slot=="Morning-Peak Time", ]
+msdata_0_opeak<-msdata_0_cov[msdata_0_cov$time_slot=="Off-Peak Time", ]
+msdata_0_epeak<-msdata_0_cov[msdata_0_cov$time_slot=="Evening-Peak Time", ]
+
+#Route section:
+msdata_0_cov_Zone1<-msdata_0_cov[msdata_0_cov$zone=="Zone1", ]
+msdata_0_cov_Zone2<-msdata_0_cov[msdata_0_cov$zone=="Zone2", ]
+msdata_0_cov_Zone3<-msdata_0_cov[msdata_0_cov$zone=="Zone3", ]
+msdata_0_cov_Zone4<-msdata_0_cov[msdata_0_cov$zone=="Zone4", ]
+
+
+#DIRECTION 1:
+#Time slot:
+msdata_1_mpeak<-msdata_1_cov[msdata_1_cov$time_slot=="Morning-Peak Time", ]
+msdata_1_opeak<-msdata_1_cov[msdata_1_cov$time_slot=="Off-Peak Time", ]
+msdata_1_epeak<-msdata_1_cov[msdata_1_cov$time_slot=="Evening-Peak Time", ]
+
+#Route section:
+msdata_1_cov_Zone1<-msdata_1_cov[msdata_1_cov$zone=="Zone1", ]
+msdata_1_cov_Zone2<-msdata_1_cov[msdata_1_cov$zone=="Zone2", ]
+msdata_1_cov_Zone3<-msdata_1_cov[msdata_1_cov$zone=="Zone3", ]
+msdata_1_cov_Zone4<-msdata_1_cov[msdata_1_cov$zone=="Zone4", ]
+```
+
+
+
+## NP for Direction 0: Time slot -----------------------------------------------
+Check events for each time slot:
+```{r}
+#Morning Peak:
+print("Morning Peak")
+events(msdata_0_mpeak)
+length(unique(msdata_0_mpeak$ID_Train))
+length(unique(msdata_0_mpeak$ID_TrainRun))
+
+#Off Peak:
+print("Off Peak")
+events(msdata_0_opeak)
+length(unique(msdata_0_opeak$ID_Train))
+length(unique(msdata_0_opeak$ID_TrainRun))
+
+#Evening Peak:
+print("Evening Peak")
+events(msdata_0_epeak)
+length(unique(msdata_0_epeak$ID_Train))
+length(unique(msdata_0_epeak$ID_TrainRun))
+```
+
+We construct a separate NP model for each time slot to properly identify specific time period differences.
+```{r}
+#Morning Peak:
+c0_mpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_mpeak, method = "breslow")
+msf0_mpeak <- msfit(object = c0_mpeak, vartype = "aalen", trans = tmat)
+summary(msf0_mpeak)
+
+#Off Peak: 
+c0_opeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_opeak, method = "breslow")
+msf0_opeak <- msfit(object = c0_opeak, vartype = "aalen", trans = tmat)
+summary(msf0_opeak)
+
+#Evening Peak: 
+c0_epeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_epeak, method = "breslow")
+msf0_epeak <- msfit(object = c0_epeak, vartype = "aalen", trans = tmat)
+summary(msf0_epeak)
+```
+
+Construct Kaplan-Meier curves and plot them:
+```{r}
+#Survival in "OnTime" for each Time slot:
+msdata_0_mpeak_ontime <- msdata_0_mpeak[msdata_0_mpeak$from == 1, ]
+msdata_0_opeak_ontime <- msdata_0_opeak[msdata_0_opeak$from == 1, ]
+msdata_0_epeak_ontime <- msdata_0_epeak[msdata_0_epeak$from == 1, ]
+
+#Survival in "SevereDelay" for each Time slot:
+msdata_0_mpeak_severedelay <- msdata_0_mpeak[msdata_0_mpeak$from == 3, ]
+msdata_0_opeak_severedelay <- msdata_0_opeak[msdata_0_opeak$from == 3, ]
+msdata_0_epeak_severedelay <- msdata_0_epeak[msdata_0_epeak$from == 3, ]
+
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_0_ontime_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_mpeak_ontime)
+kaplan_meier_0_ontime_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_opeak_ontime)
+kaplan_meier_0_ontime_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_epeak_ontime)
+
+#SevereDelay
+kaplan_meier_0_severedelay_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_mpeak_severedelay)
+kaplan_meier_0_severedelay_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_opeak_severedelay)
+kaplan_meier_0_severedelay_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_epeak_severedelay)
+```
+
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_0_ontime_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, xlim=c(0,30), conf.int=FALSE)
+lines(kaplan_meier_0_ontime_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_0_ontime_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+
+# Survival in SevereDelay:
+plot(kaplan_meier_0_severedelay_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim=c(0,30), conf.int=FALSE)
+lines(kaplan_meier_0_severedelay_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_0_severedelay_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+Transition probabilities:
+```{r}
+pt0_mpeak <- probtrans(msf0_mpeak, predt = 0, method = "aalen", variance = TRUE)
+pt0_opeak <- probtrans(msf0_opeak, predt = 0, method = "aalen", variance = TRUE)
+pt0_epeak <- probtrans(msf0_epeak, predt = 0, method = "aalen", variance = TRUE)
+
+pt_list <- list(
+  MorningPeak = pt0_mpeak,
+  OffPeak     = pt0_opeak,
+  EveningPeak = pt0_epeak
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#D1E5F0", "#F6A482", "#B31529")
+ord <- c(1,2,3)
+make_plot <- function(pt_obj, from_state, timeslot_name, state_label) {
+  plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+    scale_fill_manual(values = statecols) +
+    theme_minimal() +
+    labs(
+      title = paste("From", state_label, "(", timeslot_name, ")"),
+      x = "Time (Minutes ahead)",
+      y = "Transition Probability"
+    ) +
+    guides(fill = guide_legend(title = "States"))
+}
+plot_specs <- expand.grid(
+  timeslot = names(pt_list),
+  from = 1:3,
+  stringsAsFactors = FALSE
+)
+plots <- mapply(
+  function(timeslot, from) {
+    make_plot(
+      pt_obj = pt_list[[timeslot]],
+      from_state = from,
+      timeslot_name = timeslot,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$timeslot,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 3)
+```
+
+AIC and BIC:
+```{r}
+AIC(c0_mpeak)
+AIC(c0_opeak)
+AIC(c0_epeak)
+
+BIC(c0_mpeak)
+BIC(c0_opeak)
+BIC(c0_epeak)
+```
+
+ELOS: Expected Lenght of Stay
+Given a "probtrans" object, ELOS calculates the (restricted) expected length of stay in each of the states of the multi-state model.
+ELOS(pt, tau)
+The object pt needs to be a "probtrans" object, obtained with forward prediction. The restriction to tau is there because, as in ordinary survival analysis, the probability of being in a state can be positive until infinity, resulting in infinite values. The (restricted, until tau) expected length of stay in state h, given in state g at time s, is given by the integral from s to tau of P_gh(s,t).
+
+Bootstrap loop: used to obtain CI for each ELOS
+```{r}
+ELOS(pt0_mpeak, 130)
+ELOS(pt0_opeak, 130)
+ELOS(pt0_epeak, 130) #I use 130 since the planned time needed for the entire route is 120min
+
+bootstrap_elos <- function(data, B = 1000, max_time = 130, tmat) {
+  elos_boot <- matrix(NA, nrow = B, ncol = 3)  # cols = states
+  
+  set.seed(123)
+  for (i in 1:B) {
+    # Resample by id
+    sample_ids <- sample(unique(data$id), replace = TRUE)
+    boot_data <- do.call(rbind, lapply(sample_ids, function(id) data[data$id == id, ]))
+    
+    # Fit Cox
+    cox_boot <- coxph(Surv(time, status) ~ strata(trans), data = boot_data, method = "breslow")
+    msf_boot <- msfit(cox_boot, trans = tmat)
+    pt_boot  <- probtrans(msf_boot, predt = 0)
+    
+    # ELOS for each state
+    elos_vals <- diag(ELOS(pt_boot, max_time))
+    elos_boot[i, ] <- elos_vals[1:3]
+  }
+  
+  # Mean and CI
+  results <- apply(elos_boot, 2, function(x) {
+    c(mean = mean(x),
+      lower = quantile(x, 0.025),
+      upper = quantile(x, 0.975))
+  })
+  
+  return(t(results))
+}
+
+# Dataset list
+datasets <- list(
+  PeakMorning = msdata_0_mpeak,
+  OffPeak     = msdata_0_opeak,
+  PeakEvening = msdata_0_epeak
+)
+
+# Apply previous functon to all datesets
+results_all <- lapply(datasets, function(d) bootstrap_elos(d, B = 1000, max_time = 130, tmat = tmat))
+
+# Print
+for (timeslot in names(results_all)) {
+  cat("\n---", timeslot, "---\n")
+  res <- results_all[[timeslot]]
+  rownames(res) <- c("OnTime", "MildDelay", "SevereDelay")
+  print(round(res, 2))
+}
+```
+
+
+## NP for Direction 0: Route Section -------------------------------------------
+Check events for each route segment:
+```{r}
+#Zone 1 (Varese-Gallarate):
+print("Zone 1")
+events(msdata_0_cov_Zone1)
+length(unique(msdata_0_cov_Zone1$ID_Train))
+length(unique(msdata_0_cov_Zone1$ID_TrainRun))
+
+#Zone 2 (Busto Arsizio - Rho Fiera):
+print("Zone 2")
+events(msdata_0_cov_Zone2)
+length(unique(msdata_0_cov_Zone2$ID_Train))
+length(unique(msdata_0_cov_Zone2$ID_TrainRun))
+
+#Zone 3 (Milano Certosa - Milano Forlanini):
+print("Zone 3")
+events(msdata_0_cov_Zone3)
+length(unique(msdata_0_cov_Zone3$ID_Train))
+length(unique(msdata_0_cov_Zone3$ID_TrainRun))
+
+#Zone 4 (Segrate - Treviglio):
+print("Zone 4")
+events(msdata_0_cov_Zone4)
+length(unique(msdata_0_cov_Zone4$ID_Train))
+length(unique(msdata_0_cov_Zone4$ID_TrainRun))
+```
+
+We construct a separate NP model for each route segment to properly identify specific zone differences.
+```{r}
+#Zone 1:
+c0_Zone1<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_cov_Zone1, method = "breslow")
+msf0_Zone1 <- msfit(object = c0_Zone1, vartype = "aalen", trans = tmat)
+summary(msf0_Zone1)
+
+#Zone 2:
+c0_Zone2<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_cov_Zone2, method = "breslow")
+msf0_Zone2 <- msfit(object = c0_Zone2, vartype = "aalen", trans = tmat)
+summary(msf0_Zone2)
+
+#Zone 3: 
+c0_Zone3<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_cov_Zone3, method = "breslow")
+msf0_Zone3 <- msfit(object = c0_Mi, vartype = "aalen", trans = tmat)
+summary(msf0_Zone3)
+
+#Zone 4: 
+c0_Zone4<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_cov_Zone4, method = "breslow")
+msf0_Zone4 <- msfit(object = c0_Zone4, vartype = "aalen", trans = tmat)
+summary(msf0_Zone4)
+```
+
+Construct Kaplan-Meier curves and plot them:
+```{r}
+#Survival in "OnTime" for each Route Section:
+msdata_0_Zone1_ontime <- msdata_0_cov_Zone1[msdata_0_cov_Zone1$from == 1, ]
+msdata_0_Zone2_ontime <- msdata_0_cov_Zone2[msdata_0_cov_Zone2$from == 1, ]
+msdata_0_Zone3_ontime <- msdata_0_cov_Zone3[msdata_0_cov_Zone3$from == 1, ]
+msdata_0_Zone4_ontime <- msdata_0_cov_Zone4[msdata_0_cov_Zone4$from == 1, ]
+
+#Survival in "SevereDelay" for each Route Section:
+msdata_0_Zone1_severedelay <- msdata_0_cov_Zone1[msdata_0_cov_Zone1$from == 3, ]
+msdata_0_Zone2_severedelay <- msdata_0_cov_Zone2[msdata_0_cov_Zone2$from == 3, ]
+msdata_0_Zone3_severedelay <- msdata_0_cov_Zone3[msdata_0_cov_Zone3$from == 3, ]
+msdata_0_Zone4_severedelay <- msdata_0_cov_Zone4[msdata_0_cov_Zone4$from == 3, ]
+
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_0_ontime_Zone1 <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone1_ontime)
+kaplan_meier_0_ontime_Zone2 <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone2_ontime)
+kaplan_meier_0_ontime_Zone3 <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone3_ontime)
+kaplan_meier_0_ontime_Zone4 <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone4_ontime)
+
+#SevereDelay
+kaplan_meier_0_severedelay_Zone1 <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone1_severedelay)
+kaplan_meier_0_severedelay_Zone2 <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone2_severedelay)
+kaplan_meier_0_severedelay_Zone3 <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone3_severedelay)
+kaplan_meier_0_severedelay_Zone4 <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone4_severedelay)
+```
+
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_0_ontime_Zone1, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim=c(0,30))
+lines(kaplan_meier_0_ontime_Zone2, col = "#00B88D", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_0_ontime_Zone3, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_0_ontime_Zone4, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Zone1", "Zone2", "Zone3", "Zone4"), 
+       col = c("#87CEFA", "#00B88D", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+# Survival in SevereDelay:
+plot(kaplan_meier_0_severedelay_Zone1, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim = c(0, 10), conf.int=FALSE)
+lines(kaplan_meier_0_severedelay_Zone2, col = "#00B88D", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_0_severedelay_Zone3, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_0_severedelay_Zone4, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+Transition probabilities:
+```{r}
+pt0_Zone1 <- probtrans(msf0_Zone1, predt = 0, method = "aalen", variance = TRUE)
+pt0_Zone2 <- probtrans(msf0_Zone2, predt = 0, method = "aalen", variance = TRUE)
+pt0_Zone3 <- probtrans(msf0_Zone3, predt = 0, method = "aalen", variance = TRUE)
+pt0_Zone4 <- probtrans(msf0_Zone4, predt = 0, method = "aalen", variance = TRUE)
+
+pt_list <- list(
+  Zone1 = pt0_Zone1,
+  Zone2 = pt0_Zone2,
+  Zone3 = pt0_Zone3,
+  Zone4 = pt0_Zone4
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#D1E5F0", "#F6A482", "#B31529")
+ord <- c(1,2,3)
+# make_plot <- function(pt_obj, from_state, routesec_name, state_label) {
+#   plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+#     scale_fill_manual(values = statecols) +
+#     theme_minimal() +
+#     labs(
+#       title = paste("From", state_label, "(", routesec_name, ")"),
+#       x = "Time (Minutes ahead)",
+#       y = "Transition Probability"
+#     ) +
+#     guides(fill = guide_legend(title = "States"))
+# }
+# plot_specs <- expand.grid(
+#   routesec = names(pt_list),
+#   from = 1:3,
+#   stringsAsFactors = FALSE
+# )
+plots <- mapply(
+  function(routesec, from) {
+    make_plot(
+      pt_obj = pt_list[[routesec]],
+      from_state = from,
+      routesec_name = routesec,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$routesec,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 4)
+```
+
+AIC and BIC:
+```{r}
+AIC(c0_Zone1)
+AIC(c0_Zone2)
+AIC(c0_Zone3)
+AIC(c0_Zone4)
+
+BIC(c0_Zone1)
+BIC(c0_Zone2)
+BIC(c0_Zone3)
+BIC(c0_Zone4)
+```
+
+ELOS: Expected Lenght of Stay
+Bootstrap loop: used to obtain CI for each ELOS
+```{r}
+ELOS(pt0_Zone1, 30)
+ELOS(pt0_Zone2, 30)
+ELOS(pt0_Zone3, 30)
+ELOS(pt0_Zone4, 30)
+
+# bootstrap_elos <- function(data, B = 1000, max_time = 30, tmat) {
+#   elos_boot <- matrix(NA, nrow = B, ncol = 3)  # cols = states
+#   
+#   set.seed(123)
+#   for (i in 1:B) {
+#     # Resample by id
+#     sample_ids <- sample(unique(data$id), replace = TRUE)
+#     boot_data <- do.call(rbind, lapply(sample_ids, function(id) data[data$id == id, ]))
+#     
+#     # Fit Cox
+#     cox_boot <- coxph(Surv(time, status) ~ strata(trans), data = boot_data, method = "breslow")
+#     msf_boot <- msfit(cox_boot, trans = tmat)
+#     pt_boot  <- probtrans(msf_boot, predt = 0)
+#     
+#     # ELOS for each state
+#     elos_vals <- diag(ELOS(pt_boot, max_time))
+#     elos_boot[i, ] <- elos_vals[1:3]
+#   }
+#   
+#   # Mean and  CI
+#   results <- apply(elos_boot, 2, function(x) {
+#     c(mean = mean(x),
+#       lower = quantile(x, 0.025),
+#       upper = quantile(x, 0.975))
+#   })
+#   
+#   return(t(results))
+# }
+
+# Dataset list
+datasets <- list(
+  Zone1 = msdata_0_cov_Zone1,
+  Zone2 = msdata_0_cov_Zone2,
+  Zone3 = msdata_0_cov_Zone3,
+  Zone4 = msdata_0_cov_Zone4
+)
+
+# Apply previous function to all datesets
+results_all <- lapply(datasets, function(d) bootstrap_elos(d, B = 1000, max_time = 130, tmat = tmat))
+
+# Print results
+for (timeslot in names(results_all)) {
+  cat("\n---", timeslot, "---\n")
+  res <- results_all[[timeslot]]
+  rownames(res) <- c("OnTime", "MildDelay", "SevereDelay")
+  print(round(res, 2))
+}
+```
+
+
+## NP for Direction 0: Time Slot & Route Section -------------------------------
+Select the correct portions of the dataset:
+```{r}
+#Zone1 & Time Slot:
+msdata_0_Zone1_mpeak<-msdata_0_cov_Zone1[msdata_0_cov_Zone1$time_slot=="Morning-Peak Time", ]
+msdata_0_Zone1_opeak<-msdata_0_cov_Zone1[msdata_0_cov_Zone1$time_slot=="Off-Peak Time", ]
+msdata_0_Zone1_epeak<-msdata_0_cov_Zone1[msdata_0_cov_Zone1$time_slot=="Evening-Peak Time", ]
+
+#Zone2 & Time Slot:
+msdata_0_Zone2_mpeak<-msdata_0_cov_Zone2[msdata_0_cov_Zone2$time_slot=="Morning-Peak Time", ]
+msdata_0_Zone2_opeak<-msdata_0_cov_Zone2[msdata_0_cov_Zone2$time_slot=="Off-Peak Time", ]
+msdata_0_Zone2_epeak<-msdata_0_cov_Zone2[msdata_0_cov_Zone2$time_slot=="Evening-Peak Time", ]
+
+#Zone3 & Time Slot:
+msdata_0_Zone3_mpeak<-msdata_0_cov_Zone3[msdata_0_cov_Zone3$time_slot=="Morning-Peak Time", ]
+msdata_0_Zone3_opeak<-msdata_0_cov_Zone3[msdata_0_cov_Zone3$time_slot=="Off-Peak Time", ]
+msdata_0_Zone3_epeak<-msdata_0_cov_Zone3[msdata_0_cov_Zone3$time_slot=="Evening-Peak Time", ]
+
+#Zone4 & Time Slot:
+msdata_0_Zone4_mpeak<-msdata_0_cov_Zone4[msdata_0_cov_Zone4$time_slot=="Morning-Peak Time", ]
+msdata_0_Zone4_opeak<-msdata_0_cov_Zone4[msdata_0_cov_Zone4$time_slot=="Off-Peak Time", ]
+msdata_0_Zone4_epeak<-msdata_0_cov_Zone4[msdata_0_cov_Zone4$time_slot=="Evening-Peak Time", ]
+```
+
+Check events:
+```{r}
+#Zone1 & Time Slot:
+print("Zone1 & MorningPeak")
+events(msdata_0_Zone1_mpeak)
+print("Zone1 & OffPeak")
+events(msdata_0_Zone1_opeak)
+print("Zone1 & EveningPeak")
+events(msdata_0_Zone1_epeak)
+
+#Zone2 & Time Slot:
+print("Zone2 & MorningPeak")
+events(msdata_0_Zone2_mpeak)
+print("Zone2 & OffPeak")
+events(msdata_0_Zone2_opeak)
+print("Zone2 & EveningPeak")
+events(msdata_0_Zone2_epeak)
+
+#Zone3 & Time Slot:
+print("Zone3 & MorningPeak")
+events(msdata_0_Zone3_mpeak)
+print("Zone3 & OffPeak")
+events(msdata_0_Zone3_opeak)
+print("Zone3 & EveningPeak")
+events(msdata_0_Zone3_epeak)
+
+#Zone4 & Time Slot:
+print("Zone4 & MorningPeak")
+events(msdata_0_Zone4_mpeak)
+print("Zone4 & OffPeak")
+events(msdata_0_Zone4_opeak)
+print("Zone4 & EveningPeak")
+events(msdata_0_Zone4_epeak)
+```
+
+NP model for each combination:
+```{r}
+#Zone1 & TimeSlot:
+c0_Zone1_mpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_Zone1_mpeak, method = "breslow")
+msf0_Zone1_mpeak <- msfit(object = c0_Zone1_mpeak, vartype = "aalen", trans = tmat)
+summary(msf0_Zone1_opeak)
+
+c0_Zone1_opeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_Zone1_opeak, method = "breslow")
+msf0_Zone1_opeak <- msfit(object = c0_Zone1_opeak, vartype = "aalen", trans = tmat)
+summary(msf0_Zone1_opeak)
+
+c0_Zone1_epeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_Zone1_epeak, method = "breslow")
+msf0_Zone1_epeak <- msfit(object = c0_Zone1_epeak, vartype = "aalen", trans = tmat)
+summary(msf0_Zone1_epeak)
+
+
+#Zone2 & Time Slot:
+c0_Zone2_mpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_Zone2_mpeak, method = "breslow")
+msf0_Zone2_mpeak <- msfit(object = c0_Zone2_mpeak, vartype = "aalen", trans = tmat)
+summary(msf0_Zone2_mpeak)
+
+c0_Zone2_opeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_Zone2_opeak, method = "breslow")
+msf0_Zone2_opeak <- msfit(object = c0_Zone2_opeak, vartype = "aalen", trans = tmat)
+summary(msf0_Zone2_opeak)
+
+c0_Zone2_epeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_Zone2_epeak, method = "breslow")
+msf0_Zone2_epeak <- msfit(object = c0_Zone2_epeak, vartype = "aalen", trans = tmat)
+summary(msf0_Zone2_epeak)
+
+
+#Zone3 & Time Slot: 
+c0_Zone3_mpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_Zone3_mpeak, method = "breslow")
+msf0_Zone3_mpeak <- msfit(object = c0_Zone3_mpeak, vartype = "aalen", trans = tmat)
+summary(msf0_Zone3_mpeak)
+
+c0_Zone3_opeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_Zone3_opeak, method = "breslow")
+msf0_Zone3_opeak <- msfit(object = c0_Zone3_opeak, vartype = "aalen", trans = tmat)
+summary(msf0_Zone3_opeak)
+
+c0_Zone3_epeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_Zone3_epeak, method = "breslow")
+msf0_Zone3_epeak <- msfit(object = c0_Zone3_epeak, vartype = "aalen", trans = tmat)
+summary(msf0_Zone3_epeak)
+
+
+#Zone4 & Time Slot: 
+c0_Zone4_mpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_Zone4_mpeak, method = "breslow")
+msf0_Zone4_mpeak <- msfit(object = c0_Zone4_mpeak, vartype = "aalen", trans = tmat)
+summary(msf0_Zone4_mpeak)
+
+c0_Zone4_opeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_Zone4_opeak, method = "breslow")
+msf0_Zone4_opeak <- msfit(object = c0_Zone4_opeak, vartype = "aalen", trans = tmat)
+summary(msf0_Zone4_opeak)
+
+c0_Zone4_epeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_0_Zone4_epeak, method = "breslow")
+msf0_Zone4_epeak <- msfit(object = c0_Zone4_epeak, vartype = "aalen", trans = tmat)
+summary(msf0_Zone4_epeak)
+```
+
+Compute and plot Kaplan-Meier curves:
+```{r}
+#ZONE1 & TIME SLOT
+#Survival in OnTime for each group:
+msdata_0_Zone1_mpeak_ontime <- msdata_0_Zone1_mpeak[msdata_0_Zone1_mpeak$from == 1, ]
+msdata_0_Zone1_opeak_ontime <- msdata_0_Zone1_opeak[msdata_0_Zone1_opeak$from == 1, ]
+msdata_0_Zone1_epeak_ontime <- msdata_0_Zone1_epeak[msdata_0_Zone1_epeak$from == 1, ]
+
+#Survival in SevereDelay for each group:
+msdata_0_Zone1_mpeak_severedelay <- msdata_0_Zone1_mpeak[msdata_0_Zone1_mpeak$from == 3, ]
+msdata_0_Zone1_opeak_severedelay <- msdata_0_Zone1_opeak[msdata_0_Zone1_opeak$from == 3, ]
+msdata_0_Zone1_epeak_severedelay <- msdata_0_Zone1_epeak[msdata_0_Zone1_epeak$from == 3, ]
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_0_ontime_Zone1_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone1_mpeak_ontime)
+kaplan_meier_0_ontime_Zone1_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone1_opeak_ontime)
+kaplan_meier_0_ontime_Zone1_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone1_epeak_ontime)
+
+#SevereDelay
+kaplan_meier_0_severedelay_Zone1_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone1_mpeak_severedelay)
+kaplan_meier_0_severedelay_Zone1_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone1_opeak_severedelay)
+kaplan_meier_0_severedelay_Zone1_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone1_epeak_severedelay)
+
+
+#ZONE2 & TIME SLOT
+#Survival in OnTime for each group:
+msdata_0_Zone2_mpeak_ontime <- msdata_0_Zone2_mpeak[msdata_0_Zone2_mpeak$from == 1, ]
+msdata_0_Zone2_opeak_ontime <- msdata_0_Zone2_opeak[msdata_0_Zone2_opeak$from == 1, ]
+msdata_0_Zone2_epeak_ontime <- msdata_0_Zone2_epeak[msdata_0_Zone2_epeak$from == 1, ]
+
+#Survival in SevereDelay for each group:
+msdata_0_Zone2_mpeak_severedelay <- msdata_0_Zone2_mpeak[msdata_0_Zone2_mpeak$from == 3, ]
+msdata_0_Zone2_opeak_severedelay <- msdata_0_Zone2_opeak[msdata_0_Zone2_opeak$from == 3, ]
+msdata_0_Zone2_epeak_severedelay <- msdata_0_Zone2_epeak[msdata_0_Zone2_epeak$from == 3, ]
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_0_ontime_Zone2_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone2_mpeak_ontime)
+kaplan_meier_0_ontime_Zone2_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone2_opeak_ontime)
+kaplan_meier_0_ontime_Zone2_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone2_epeak_ontime)
+
+#SevereDelay
+kaplan_meier_0_severedelay_Zone2_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone2_mpeak_severedelay)
+kaplan_meier_0_severedelay_Zone2_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone2_opeak_severedelay)
+kaplan_meier_0_severedelay_Zone2_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone2_epeak_severedelay)
+
+
+#ZONE3 & TIME SLOT
+#Survival in OnTime for each group:
+msdata_0_Zone3_mpeak_ontime <- msdata_0_Zone3_mpeak[msdata_0_Zone3_mpeak$from == 1, ]
+msdata_0_Zone3_opeak_ontime <- msdata_0_Zone3_opeak[msdata_0_Zone3_opeak$from == 1, ]
+msdata_0_Zone3_epeak_ontime <- msdata_0_Zone3_epeak[msdata_0_Zone3_epeak$from == 1, ]
+
+#Survival in SevereDelay for each group:
+msdata_0_Zone3_mpeak_severedelay <- msdata_0_Zone3_mpeak[msdata_0_Zone3_mpeak$from == 3, ]
+msdata_0_Zone3_opeak_severedelay <- msdata_0_Zone3_opeak[msdata_0_Zone3_opeak$from == 3, ]
+msdata_0_Zone3_epeak_severedelay <- msdata_0_Zone3_epeak[msdata_0_Zone3_epeak$from == 3, ]
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_0_ontime_Zone3_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone3_mpeak_ontime)
+kaplan_meier_0_ontime_Zone3_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone3_opeak_ontime)
+kaplan_meier_0_ontime_Zone3_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone3_epeak_ontime)
+
+#SevereDelay
+kaplan_meier_0_severedelay_Zone3_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone3_mpeak_severedelay)
+kaplan_meier_0_severedelay_Zone3_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone3_opeak_severedelay)
+kaplan_meier_0_severedelay_Zone3_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone3_epeak_severedelay)
+
+
+#ZONE4 & TIME SLOT
+#Survival in OnTime for each group:
+msdata_0_Zone4_mpeak_ontime <- msdata_0_Zone4_mpeak[msdata_0_Zone4_mpeak$from == 1, ]
+msdata_0_Zone4_opeak_ontime <- msdata_0_Zone4_opeak[msdata_0_Zone4_opeak$from == 1, ]
+msdata_0_Zone4_epeak_ontime <- msdata_0_Zone4_epeak[msdata_0_Zone4_epeak$from == 1, ]
+
+#Survival in SevereDelay for each group:
+msdata_0_Zone4_mpeak_severedelay <- msdata_0_Zone4_mpeak[msdata_0_Zone4_mpeak$from == 3, ]
+msdata_0_Zone4_opeak_severedelay <- msdata_0_Zone4_opeak[msdata_0_Zone4_opeak$from == 3, ]
+msdata_0_Zone4_epeak_severedelay <- msdata_0_Zone4_epeak[msdata_0_Zone4_epeak$from == 3, ]
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_0_ontime_Zone4_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone4_mpeak_ontime)
+kaplan_meier_0_ontime_Zone4_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone4_opeak_ontime)
+kaplan_meier_0_ontime_Zone4_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone4_epeak_ontime)
+
+#SevereDelay
+kaplan_meier_0_severedelay_Zone4_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone4_mpeak_severedelay)
+kaplan_meier_0_severedelay_Zone4_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone4_opeak_severedelay)
+kaplan_meier_0_severedelay_Zone4_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_0_Zone4_epeak_severedelay)
+```
+
+1) Zone1 & Time Slot
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_0_ontime_Zone1_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim = c(0,20))
+lines(kaplan_meier_0_ontime_Zone1_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_0_ontime_Zone1_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+# Survival in SevereDelay:
+plot(kaplan_meier_0_severedelay_Zone1_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim = c(0, 10), conf.int=FALSE)
+lines(kaplan_meier_0_severedelay_Zone1_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_0_severedelay_Zone1_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+2) Zone2 & Time Slot
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_0_ontime_Zone2_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim = c(0,20))
+lines(kaplan_meier_0_ontime_Zone2_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_0_ontime_Zone2_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+# Survival in SevereDelay:
+plot(kaplan_meier_0_severedelay_Zone2_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim = c(0, 10), conf.int=FALSE)
+lines(kaplan_meier_0_severedelay_Zone2_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_0_severedelay_Zone2_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+3) Zone3 & Time Slot
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_0_ontime_Zone3_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim = c(0,20))
+lines(kaplan_meier_0_ontime_Zone3_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_0_ontime_Zone3_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+# Survival in SevereDelay:
+plot(kaplan_meier_0_severedelay_Zone3_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim = c(0, 10), conf.int=FALSE)
+lines(kaplan_meier_0_severedelay_Zone3_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_0_severedelay_Zone3_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+4) Zone4 & Time Slot
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_0_ontime_Zone4_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim = c(0,20))
+lines(kaplan_meier_0_ontime_Zone4_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_0_ontime_Zone4_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+# Survival in SevereDelay:
+plot(kaplan_meier_0_severedelay_Zone4_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim = c(0, 10), conf.int=FALSE)
+lines(kaplan_meier_0_severedelay_Zone4_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_0_severedelay_Zone_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+Compute Transition Probabilities:
+1) Zone1 & Time Slot
+```{r}
+pt0_Zone1_mpeak <- probtrans(msf0_Zone1_mpeak, predt = 0, method = "aalen")
+pt0_Zone1_opeak <- probtrans(msf0_Zone1_opeak, predt = 0, method = "aalen")
+pt0_Zone1_epeak <- probtrans(msf0_Zone1_epeak, predt = 0, method = "aalen")
+
+pt_list <- list(
+  Zone1_mpeak = pt0_Zone1_mpeak,
+  Zone1_opeak = pt0_Zone1_opeak,
+  Zone1_epeak = pt0_Zone1_epeak
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#D1E5F0", "#F6A482", "#B31529")
+ord <- c(1,2,3)
+# make_plot <- function(pt_obj, from_state, scenario_name, state_label) {
+#   plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+#     scale_fill_manual(values = statecols) +
+#     theme_minimal() +
+#     labs(
+#       title = paste("From", state_label, "(", scenario_name, ")"),
+#       x = "Time (Minutes ahead)",
+#       y = "Transition Probability"
+#     ) +
+#     guides(fill = guide_legend(title = "States"))
+# }
+# plot_specs <- expand.grid(
+#   scenario = names(pt_list),
+#   from = 1:3,
+#   stringsAsFactors = FALSE
+# )
+plots <- mapply(
+  function(scenario, from) {
+    make_plot(
+      pt_obj = pt_list[[scenario]],
+      from_state = from,
+      scenario_name = scenario,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$scenario,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 3)
+```
+
+2) Zone2 & Time Slot
+```{r}
+pt0_Zone2_mpeak <- probtrans(msf0_Zone2_mpeak, predt = 0, method = "aalen")
+pt0_Zone2_opeak <- probtrans(msf0_Zone2_opeak, predt = 0, method = "aalen")
+pt0_Zone2_epeak <- probtrans(msf0_Zone2_epeak, predt = 0, method = "aalen")
+
+pt_list <- list(
+  Zone2_mpeak = pt0_Zone2_mpeak,
+  Zone2_opeak = pt0_Zone2_opeak,
+  Zone2_epeak = pt0_Zone2_epeak
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#D1E5F0", "#F6A482", "#B31529")
+ord <- c(1,2,3)
+# make_plot <- function(pt_obj, from_state, scenario_name, state_label) {
+#   plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+#     scale_fill_manual(values = statecols) +
+#     theme_minimal() +
+#     labs(
+#       title = paste("From", state_label, "(", scenario_name, ")"),
+#       x = "Time (Minutes ahead)",
+#       y = "Transition Probability"
+#     ) +
+#     guides(fill = guide_legend(title = "States"))
+# }
+# plot_specs <- expand.grid(
+#   scenario = names(pt_list),
+#   from = 1:3,
+#   stringsAsFactors = FALSE
+# )
+plots <- mapply(
+  function(scenario, from) {
+    make_plot(
+      pt_obj = pt_list[[scenario]],
+      from_state = from,
+      scenario_name = scenario,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$scenario,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 3)
+```
+
+3) Zone3 & Time Slot
+```{r}
+pt0_Zone3_mpeak <- probtrans(msf0_Zone3_mpeak, predt = 0, method = "aalen")
+pt0_Zone3_opeak <- probtrans(msf0_Zone3_opeak, predt = 0, method = "aalen")
+pt0_Zone3_epeak <- probtrans(msf0_Zone3_epeak, predt = 0, method = "aalen")
+
+pt_list <- list(
+  Zone3_mpeak = pt0_Zone3_mpeak,
+  Zone3_opeak = pt0_Zone3_opeak,
+  Zone3_epeak = pt0_Zone3_epeak
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#D1E5F0", "#F6A482", "#B31529")
+ord <- c(1,2,3)
+# make_plot <- function(pt_obj, from_state, scenario_name, state_label) {
+#   plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+#     scale_fill_manual(values = statecols) +
+#     theme_minimal() +
+#     labs(
+#       title = paste("From", state_label, "(", scenario_name, ")"),
+#       x = "Time (Minutes ahead)",
+#       y = "Transition Probability"
+#     ) +
+#     guides(fill = guide_legend(title = "States"))
+# }
+# plot_specs <- expand.grid(
+#   scenario = names(pt_list),
+#   from = 1:3,
+#   stringsAsFactors = FALSE
+# )
+plots <- mapply(
+  function(scenario, from) {
+    make_plot(
+      pt_obj = pt_list[[scenario]],
+      from_state = from,
+      scenario_name = scenario,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$scenario,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 3)
+```
+
+4) Zone4 & Time Slot
+```{r}
+pt0_Zone4_mpeak <- probtrans(msf0_Zone4_mpeak, predt = 0, method = "aalen")
+pt0_Zone4_opeak <- probtrans(msf0_Zone4_opeak, predt = 0, method = "aalen")
+pt0_Zone4_epeak <- probtrans(msf0_Zone4_epeak, predt = 0, method = "aalen")
+
+pt_list <- list(
+  Zone4_mpeak = pt0_Zone4_mpeak,
+  Zone4_opeak = pt0_Zone4_opeak,
+  Zone4_epeak = pt0_Zone4_epeak
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#D1E5F0", "#F6A482", "#B31529")
+ord <- c(1,2,3)
+# make_plot <- function(pt_obj, from_state, scenario_name, state_label) {
+#   plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+#     scale_fill_manual(values = statecols) +
+#     theme_minimal() +
+#     labs(
+#       title = paste("From", state_label, "(", scenario_name, ")"),
+#       x = "Time (Minutes ahead)",
+#       y = "Transition Probability"
+#     ) +
+#     guides(fill = guide_legend(title = "States"))
+# }
+# plot_specs <- expand.grid(
+#   scenario = names(pt_list),
+#   from = 1:3,
+#   stringsAsFactors = FALSE
+# )
+plots <- mapply(
+  function(scenario, from) {
+    make_plot(
+      pt_obj = pt_list[[scenario]],
+      from_state = from,
+      scenario_name = scenario,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$scenario,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 3)
+```
+
+AIC and BIC:
+```{r}
+print("Zone1 & Time Slot")
+AIC(c0_Zone1_mpeak)
+AIC(c0_Zone1_opeak)
+AIC(c0_Zone1_epeak)
+BIC(c0_Zone1_mpeak)
+BIC(c0_Zone1_opeak)
+BIC(c0_Zone1_epeak)
+
+print("Zone2 & Time Slot")
+AIC(c0_Zone2_mpeak)
+AIC(c0_Zone2_opeak)
+AIC(c0_Zone2_epeak)
+BIC(c0_Zone2_mpeak)
+BIC(c0_Zone2_opeak)
+BIC(c0_Zone2_epeak)
+
+print("Zone3 & Time Slot")
+AIC(c0_Zone3_mpeak)
+AIC(c0_Zone3_opeak)
+AIC(c0_Zone3_epeak)
+BIC(c0_Zone3_mpeak)
+BIC(c0_Zone3_opeak)
+BIC(c0_Zone3_epeak)
+
+print("Zone4 & Time Slot")
+AIC(c0_Zone4_mpeak)
+AIC(c0_Zone4_opeak)
+AIC(c0_Zone4_epeak)
+BIC(c0_Zone4_mpeak)
+BIC(c0_Zone4_opeak)
+BIC(c0_Zone4_epeak)
+```
+
+
+
+## NP for Direction 1: Time slot -----------------------------------------------
+Check events for each time slot:
+```{r}
+#Morning Peak:
+print("Morning Peak")
+events(msdata_1_mpeak)
+length(unique(msdata_1_mpeak$ID_Train))
+length(unique(msdata_1_mpeak$ID_TrainRun))
+
+#Off Peak:
+print("Off Peak")
+events(msdata_1_opeak)
+length(unique(msdata_1_opeak$ID_Train))
+length(unique(msdata_1_opeak$ID_TrainRun))
+
+#Evening Peak:
+print("Evening Peak")
+events(msdata_1_epeak)
+length(unique(msdata_1_epeak$ID_Train))
+length(unique(msdata_1_epeak$ID_TrainRun))
+```
+
+We construct a separate NP model for each time slot to properly identify specific time period differences.
+```{r}
+#Morning Peak:
+c1_mpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_mpeak, method = "breslow")
+msf1_mpeak <- msfit(object = c1_mpeak, vartype = "aalen", trans = tmat)
+summary(msf1_mpeak)
+
+#Off Peak: 
+c1_opeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_opeak, method = "breslow")
+msf1_opeak <- msfit(object = c1_opeak, vartype = "aalen", trans = tmat)
+summary(msf1_opeak)
+
+#Evening Peak: 
+c1_epeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_epeak, method = "breslow")
+msf1_epeak <- msfit(object = c1_epeak, vartype = "aalen", trans = tmat)
+summary(msf1_epeak)
+```
+
+Construct Kaplan-Meier curves and plot them:
+```{r}
+#Survival in "OnTime" for each Time slot:
+msdata_1_mpeak_ontime <- msdata_1_mpeak[msdata_1_mpeak$from == 1, ]
+msdata_1_opeak_ontime <- msdata_1_opeak[msdata_1_opeak$from == 1, ]
+msdata_1_epeak_ontime <- msdata_1_epeak[msdata_1_epeak$from == 1, ]
+
+#Survival in "SevereDelay" for each Time slot:
+msdata_1_mpeak_severedelay <- msdata_1_mpeak[msdata_1_mpeak$from == 3, ]
+msdata_1_opeak_severedelay <- msdata_1_opeak[msdata_1_opeak$from == 3, ]
+msdata_1_epeak_severedelay <- msdata_1_epeak[msdata_1_epeak$from == 3, ]
+
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_1_ontime_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_mpeak_ontime)
+kaplan_meier_1_ontime_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_opeak_ontime)
+kaplan_meier_1_ontime_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_epeak_ontime)
+
+#SevereDelay
+kaplan_meier_1_severedelay_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_mpeak_severedelay)
+kaplan_meier_1_severedelay_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_opeak_severedelay)
+kaplan_meier_1_severedelay_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_epeak_severedelay)
+```
+
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_1_ontime_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, xlim=c(0,30), conf.int=FALSE)
+lines(kaplan_meier_1_ontime_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ontime_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+
+# Survival in SevereDelay:
+plot(kaplan_meier_1_severedelay_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim=c(0,30), conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+Transition probabilities:
+```{r}
+pt1_mpeak <- probtrans(msf1_mpeak, predt = 0, method = "aalen", variance = TRUE)
+pt1_opeak <- probtrans(msf1_opeak, predt = 0, method = "aalen", variance = TRUE)
+pt1_epeak <- probtrans(msf1_epeak, predt = 0, method = "aalen", variance = TRUE)
+
+pt_list <- list(
+  MorningPeak = pt1_mpeak,
+  OffPeak     = pt1_opeak,
+  EveningPeak = pt1_epeak
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#D1E5F0", "#F6A482", "#B31529")
+ord <- c(1,2,3)
+make_plot <- function(pt_obj, from_state, timeslot_name, state_label) {
+  plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+    scale_fill_manual(values = statecols) +
+    theme_minimal() +
+    labs(
+      title = paste("From", state_label, "(", timeslot_name, ")"),
+      x = "Time (Minutes ahead)",
+      y = "Transition Probability"
+    ) +
+    guides(fill = guide_legend(title = "States"))
+}
+plot_specs <- expand.grid(
+  timeslot = names(pt_list),
+  from = 1:3,
+  stringsAsFactors = FALSE
+)
+plots <- mapply(
+  function(timeslot, from) {
+    make_plot(
+      pt_obj = pt_list[[timeslot]],
+      from_state = from,
+      timeslot_name = timeslot,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$timeslot,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 3)
+```
+
+AIC and BIC:
+```{r}
+AIC(c1_mpeak)
+AIC(c1_opeak)
+AIC(c1_epeak)
+
+BIC(c1_mpeak)
+BIC(c1_opeak)
+BIC(c1_epeak)
+```
+
+ELOS: Expected Lenght of Stay
+Given a "probtrans" object, ELOS calculates the (restricted) expected length of stay in each of the states of the multi-state model.
+ELOS(pt, tau)
+The object pt needs to be a "probtrans" object, obtained with forward prediction. The restriction to tau is there because, as in ordinary survival analysis, the probability of being in a state can be positive until infinity, resulting in infinite values. The (restricted, until tau) expected length of stay in state h, given in state g at time s, is given by the integral from s to tau of P_gh(s,t).
+
+Bootstrap loop: used to obtain CI for each ELOS
+```{r}
+ELOS(pt1_mpeak, 130)
+ELOS(pt1_opeak, 130)
+ELOS(pt1_epeak, 130) #I use 130 since the planned time needed for the entire route is 120min
+
+bootstrap_elos <- function(data, B = 1000, max_time = 130, tmat) {
+  elos_boot <- matrix(NA, nrow = B, ncol = 3)  # cols = states
+  
+  set.seed(123)
+  for (i in 1:B) {
+    # Resample by id
+    sample_ids <- sample(unique(data$id), replace = TRUE)
+    boot_data <- do.call(rbind, lapply(sample_ids, function(id) data[data$id == id, ]))
+    
+    # Fit Cox
+    cox_boot <- coxph(Surv(time, status) ~ strata(trans), data = boot_data, method = "breslow")
+    msf_boot <- msfit(cox_boot, trans = tmat)
+    pt_boot  <- probtrans(msf_boot, predt = 0)
+    
+    # ELOS for each state
+    elos_vals <- diag(ELOS(pt_boot, max_time))
+    elos_boot[i, ] <- elos_vals[1:3]
+  }
+  
+  # Mean and CI
+  results <- apply(elos_boot, 2, function(x) {
+    c(mean = mean(x),
+      lower = quantile(x, 0.025),
+      upper = quantile(x, 0.975))
+  })
+  
+  return(t(results))
+}
+
+# Dataset list
+datasets <- list(
+  PeakMorning = msdata_1_mpeak,
+  OffPeak     = msdata_1_opeak,
+  PeakEvening = msdata_1_epeak
+)
+
+# Apply previous functon to all datesets
+results_all <- lapply(datasets, function(d) bootstrap_elos(d, B = 1000, max_time = 130, tmat = tmat))
+
+# Print
+for (timeslot in names(results_all)) {
+  cat("\n---", timeslot, "---\n")
+  res <- results_all[[timeslot]]
+  rownames(res) <- c("OnTime", "MildDelay", "SevereDelay")
+  print(round(res, 2))
+}
+```
+
+
+## NP for Direction 1: Route Section -------------------------------------------
+Check events for each route segment:
+```{r}
+#Zone 1 (Varese-Gallarate):
+print("Zone 1")
+events(msdata_1_cov_Zone1)
+length(unique(msdata_1_cov_Zone1$ID_Train))
+length(unique(msdata_1_cov_Zone1$ID_TrainRun))
+
+#Zone 2 (Busto Arsizio - Rho Fiera):
+print("Zone 2")
+events(msdata_1_cov_Zone2)
+length(unique(msdata_1_cov_Zone2$ID_Train))
+length(unique(msdata_1_cov_Zone2$ID_TrainRun))
+
+#Zone 3 (Milano Certosa - Milano Forlanini):
+print("Zone 3")
+events(msdata_1_cov_Zone3)
+length(unique(msdata_1_cov_Zone3$ID_Train))
+length(unique(msdata_1_cov_Zone3$ID_TrainRun))
+
+#Zone 4 (Segrate - Treviglio):
+print("Zone 4")
+events(msdata_1_cov_Zone4)
+length(unique(msdata_1_cov_Zone4$ID_Train))
+length(unique(msdata_1_cov_Zone4$ID_TrainRun))
+```
+
+We construct a separate NP model for each route segment to properly identify specific zone differences.
+```{r}
+#Zone 1:
+c1_Zone1<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_cov_Zone1, method = "breslow")
+msf1_Zone1 <- msfit(object = c1_Zone1, vartype = "aalen", trans = tmat)
+summary(msf1_Zone1)
+
+#Zone 2:
+c1_Zone2<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_cov_Zone2, method = "breslow")
+msf1_Zone2 <- msfit(object = c1_Zone2, vartype = "aalen", trans = tmat)
+summary(msf1_Zone2)
+
+#Zone 3: 
+c1_Zone3<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_cov_Zone3, method = "breslow")
+msf1_Zone3 <- msfit(object = c1_Mi, vartype = "aalen", trans = tmat)
+summary(msf1_Zone3)
+
+#Zone 4: 
+c1_Zone4<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_cov_Zone4, method = "breslow")
+msf1_Zone4 <- msfit(object = c1_Zone4, vartype = "aalen", trans = tmat)
+summary(msf1_Zone4)
+```
+
+Construct Kaplan-Meier curves and plot them:
+```{r}
+#Survival in "OnTime" for each Route Section:
+msdata_1_Zone1_ontime <- msdata_1_cov_Zone1[msdata_1_cov_Zone1$from == 1, ]
+msdata_1_Zone2_ontime <- msdata_1_cov_Zone2[msdata_1_cov_Zone2$from == 1, ]
+msdata_1_Zone3_ontime <- msdata_1_cov_Zone3[msdata_1_cov_Zone3$from == 1, ]
+msdata_1_Zone4_ontime <- msdata_1_cov_Zone4[msdata_1_cov_Zone4$from == 1, ]
+
+#Survival in "SevereDelay" for each Route Section:
+msdata_1_Zone1_severedelay <- msdata_1_cov_Zone1[msdata_1_cov_Zone1$from == 3, ]
+msdata_1_Zone2_severedelay <- msdata_1_cov_Zone2[msdata_1_cov_Zone2$from == 3, ]
+msdata_1_Zone3_severedelay <- msdata_1_cov_Zone3[msdata_1_cov_Zone3$from == 3, ]
+msdata_1_Zone4_severedelay <- msdata_1_cov_Zone4[msdata_1_cov_Zone4$from == 3, ]
+
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_1_ontime_Zone1 <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone1_ontime)
+kaplan_meier_1_ontime_Zone2 <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone2_ontime)
+kaplan_meier_1_ontime_Zone3 <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone3_ontime)
+kaplan_meier_1_ontime_Zone4 <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone4_ontime)
+
+#SevereDelay
+kaplan_meier_1_severedelay_Zone1 <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone1_severedelay)
+kaplan_meier_1_severedelay_Zone2 <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone2_severedelay)
+kaplan_meier_1_severedelay_Zone3 <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone3_severedelay)
+kaplan_meier_1_severedelay_Zone4 <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone4_severedelay)
+```
+
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_1_ontime_Zone1, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim=c(0,30))
+lines(kaplan_meier_1_ontime_Zone2, col = "#00B88D", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ontime_Zone3, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ontime_Zone4, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Zone1", "Zone2", "Zone3", "Zone4"), 
+       col = c("#87CEFA", "#00B88D", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+# Survival in SevereDelay:
+plot(kaplan_meier_1_severedelay_Zone1, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim = c(0, 10), conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_Zone2, col = "#00B88D", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_Zone3, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_Zone4, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+Transition probabilities:
+```{r}
+pt1_Zone1 <- probtrans(msf1_Zone1, predt = 0, method = "aalen", variance = TRUE)
+pt1_Zone2 <- probtrans(msf1_Zone2, predt = 0, method = "aalen", variance = TRUE)
+pt1_Zone3 <- probtrans(msf1_Zone3, predt = 0, method = "aalen", variance = TRUE)
+pt1_Zone4 <- probtrans(msf1_Zone4, predt = 0, method = "aalen", variance = TRUE)
+
+pt_list <- list(
+  Zone1 = pt1_Zone1,
+  Zone2 = pt1_Zone2,
+  Zone3 = pt1_Zone3,
+  Zone4 = pt1_Zone4
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#D1E5F0", "#F6A482", "#B31529")
+ord <- c(1,2,3)
+# make_plot <- function(pt_obj, from_state, routesec_name, state_label) {
+#   plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+#     scale_fill_manual(values = statecols) +
+#     theme_minimal() +
+#     labs(
+#       title = paste("From", state_label, "(", routesec_name, ")"),
+#       x = "Time (Minutes ahead)",
+#       y = "Transition Probability"
+#     ) +
+#     guides(fill = guide_legend(title = "States"))
+# }
+# plot_specs <- expand.grid(
+#   routesec = names(pt_list),
+#   from = 1:3,
+#   stringsAsFactors = FALSE
+# )
+plots <- mapply(
+  function(routesec, from) {
+    make_plot(
+      pt_obj = pt_list[[routesec]],
+      from_state = from,
+      routesec_name = routesec,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$routesec,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 4)
+```
+
+AIC and BIC:
+```{r}
+AIC(c1_Zone1)
+AIC(c1_Zone2)
+AIC(c1_Zone3)
+AIC(c1_Zone4)
+
+BIC(c1_Zone1)
+BIC(c1_Zone2)
+BIC(c1_Zone3)
+BIC(c1_Zone4)
+```
+
+ELOS: Expected Lenght of Stay
+Bootstrap loop: used to obtain CI for each ELOS
+```{r}
+ELOS(pt1_Zone1, 30)
+ELOS(pt1_Zone2, 30)
+ELOS(pt1_Zone3, 30)
+ELOS(pt1_Zone4, 30)
+
+# bootstrap_elos <- function(data, B = 1000, max_time = 30, tmat) {
+#   elos_boot <- matrix(NA, nrow = B, ncol = 3)  # cols = states
+#   
+#   set.seed(123)
+#   for (i in 1:B) {
+#     # Resample by id
+#     sample_ids <- sample(unique(data$id), replace = TRUE)
+#     boot_data <- do.call(rbind, lapply(sample_ids, function(id) data[data$id == id, ]))
+#     
+#     # Fit Cox
+#     cox_boot <- coxph(Surv(time, status) ~ strata(trans), data = boot_data, method = "breslow")
+#     msf_boot <- msfit(cox_boot, trans = tmat)
+#     pt_boot  <- probtrans(msf_boot, predt = 0)
+#     
+#     # ELOS for each state
+#     elos_vals <- diag(ELOS(pt_boot, max_time))
+#     elos_boot[i, ] <- elos_vals[1:3]
+#   }
+#   
+#   # Mean and  CI
+#   results <- apply(elos_boot, 2, function(x) {
+#     c(mean = mean(x),
+#       lower = quantile(x, 0.025),
+#       upper = quantile(x, 0.975))
+#   })
+#   
+#   return(t(results))
+# }
+
+# Dataset list
+datasets <- list(
+  Zone1 = msdata_1_cov_Zone1,
+  Zone2 = msdata_1_cov_Zone2,
+  Zone3 = msdata_1_cov_Zone3,
+  Zone4 = msdata_1_cov_Zone4
+)
+
+# Apply previous function to all datesets
+results_all <- lapply(datasets, function(d) bootstrap_elos(d, B = 1000, max_time = 130, tmat = tmat))
+
+# Print results
+for (timeslot in names(results_all)) {
+  cat("\n---", timeslot, "---\n")
+  res <- results_all[[timeslot]]
+  rownames(res) <- c("OnTime", "MildDelay", "SevereDelay")
+  print(round(res, 2))
+}
+```
+
+
+## NP for Direction 1: Time Slot & Route Section -------------------------------
+Select the correct portions of the dataset:
+```{r}
+#Zone1 & Time Slot:
+msdata_1_Zone1_mpeak<-msdata_1_cov_Zone1[msdata_1_cov_Zone1$time_slot=="Morning-Peak Time", ]
+msdata_1_Zone1_opeak<-msdata_1_cov_Zone1[msdata_1_cov_Zone1$time_slot=="Off-Peak Time", ]
+msdata_1_Zone1_epeak<-msdata_1_cov_Zone1[msdata_1_cov_Zone1$time_slot=="Evening-Peak Time", ]
+
+#Zone2 & Time Slot:
+msdata_1_Zone2_mpeak<-msdata_1_cov_Zone2[msdata_1_cov_Zone2$time_slot=="Morning-Peak Time", ]
+msdata_1_Zone2_opeak<-msdata_1_cov_Zone2[msdata_1_cov_Zone2$time_slot=="Off-Peak Time", ]
+msdata_1_Zone2_epeak<-msdata_1_cov_Zone2[msdata_1_cov_Zone2$time_slot=="Evening-Peak Time", ]
+
+#Zone3 & Time Slot:
+msdata_1_Zone3_mpeak<-msdata_1_cov_Zone3[msdata_1_cov_Zone3$time_slot=="Morning-Peak Time", ]
+msdata_1_Zone3_opeak<-msdata_1_cov_Zone3[msdata_1_cov_Zone3$time_slot=="Off-Peak Time", ]
+msdata_1_Zone3_epeak<-msdata_1_cov_Zone3[msdata_1_cov_Zone3$time_slot=="Evening-Peak Time", ]
+
+#Zone4 & Time Slot:
+msdata_1_Zone4_mpeak<-msdata_1_cov_Zone4[msdata_1_cov_Zone4$time_slot=="Morning-Peak Time", ]
+msdata_1_Zone4_opeak<-msdata_1_cov_Zone4[msdata_1_cov_Zone4$time_slot=="Off-Peak Time", ]
+msdata_1_Zone4_epeak<-msdata_1_cov_Zone4[msdata_1_cov_Zone4$time_slot=="Evening-Peak Time", ]
+```
+
+Check events:
+```{r}
+#Zone1 & Time Slot:
+print("Zone1 & MorningPeak")
+events(msdata_1_Zone1_mpeak)
+print("Zone1 & OffPeak")
+events(msdata_1_Zone1_opeak)
+print("Zone1 & EveningPeak")
+events(msdata_1_Zone1_epeak)
+
+#Zone2 & Time Slot:
+print("Zone2 & MorningPeak")
+events(msdata_1_Zone2_mpeak)
+print("Zone2 & OffPeak")
+events(msdata_1_Zone2_opeak)
+print("Zone2 & EveningPeak")
+events(msdata_1_Zone2_epeak)
+
+#Zone3 & Time Slot:
+print("Zone3 & MorningPeak")
+events(msdata_1_Zone3_mpeak)
+print("Zone3 & OffPeak")
+events(msdata_1_Zone3_opeak)
+print("Zone3 & EveningPeak")
+events(msdata_1_Zone3_epeak)
+
+#Zone4 & Time Slot:
+print("Zone4 & MorningPeak")
+events(msdata_1_Zone4_mpeak)
+print("Zone4 & OffPeak")
+events(msdata_1_Zone4_opeak)
+print("Zone4 & EveningPeak")
+events(msdata_1_Zone4_epeak)
+```
+
+NP model for each combination:
+```{r}
+#Zone1 & TimeSlot:
+c1_Zone1_mpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Zone1_mpeak, method = "breslow")
+msf1_Zone1_mpeak <- msfit(object = c1_Zone1_mpeak, vartype = "aalen", trans = tmat)
+summary(msf1_Zone1_opeak)
+
+c1_Zone1_opeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Zone1_opeak, method = "breslow")
+msf1_Zone1_opeak <- msfit(object = c1_Zone1_opeak, vartype = "aalen", trans = tmat)
+summary(msf1_Zone1_opeak)
+
+c1_Zone1_epeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Zone1_epeak, method = "breslow")
+msf1_Zone1_epeak <- msfit(object = c1_Zone1_epeak, vartype = "aalen", trans = tmat)
+summary(msf1_Zone1_epeak)
+
+
+#Zone2 & Time Slot:
+c1_Zone2_mpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Zone2_mpeak, method = "breslow")
+msf1_Zone2_mpeak <- msfit(object = c1_Zone2_mpeak, vartype = "aalen", trans = tmat)
+summary(msf1_Zone2_mpeak)
+
+c1_Zone2_opeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Zone2_opeak, method = "breslow")
+msf1_Zone2_opeak <- msfit(object = c1_Zone2_opeak, vartype = "aalen", trans = tmat)
+summary(msf1_Zone2_opeak)
+
+c1_Zone2_epeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Zone2_epeak, method = "breslow")
+msf1_Zone2_epeak <- msfit(object = c1_Zone2_epeak, vartype = "aalen", trans = tmat)
+summary(msf1_Zone2_epeak)
+
+
+#Zone3 & Time Slot: 
+c1_Zone3_mpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Zone3_mpeak, method = "breslow")
+msf1_Zone3_mpeak <- msfit(object = c1_Zone3_mpeak, vartype = "aalen", trans = tmat)
+summary(msf1_Zone3_mpeak)
+
+c1_Zone3_opeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Zone3_opeak, method = "breslow")
+msf1_Zone3_opeak <- msfit(object = c1_Zone3_opeak, vartype = "aalen", trans = tmat)
+summary(msf1_Zone3_opeak)
+
+c1_Zone3_epeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Zone3_epeak, method = "breslow")
+msf1_Zone3_epeak <- msfit(object = c1_Zone3_epeak, vartype = "aalen", trans = tmat)
+summary(msf1_Zone3_epeak)
+
+
+#Zone4 & Time Slot: 
+c1_Zone4_mpeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Zone4_mpeak, method = "breslow")
+msf1_Zone4_mpeak <- msfit(object = c1_Zone4_mpeak, vartype = "aalen", trans = tmat)
+summary(msf1_Zone4_mpeak)
+
+c1_Zone4_opeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Zone4_opeak, method = "breslow")
+msf1_Zone4_opeak <- msfit(object = c1_Zone4_opeak, vartype = "aalen", trans = tmat)
+summary(msf1_Zone4_opeak)
+
+c1_Zone4_epeak<-coxph(Surv(time, status) ~ strata(trans), data = msdata_1_Zone4_epeak, method = "breslow")
+msf1_Zone4_epeak <- msfit(object = c1_Zone4_epeak, vartype = "aalen", trans = tmat)
+summary(msf1_Zone4_epeak)
+```
+
+Compute and plot Kaplan-Meier curves:
+```{r}
+#ZONE1 & TIME SLOT
+#Survival in OnTime for each group:
+msdata_1_Zone1_mpeak_ontime <- msdata_1_Zone1_mpeak[msdata_1_Zone1_mpeak$from == 1, ]
+msdata_1_Zone1_opeak_ontime <- msdata_1_Zone1_opeak[msdata_1_Zone1_opeak$from == 1, ]
+msdata_1_Zone1_epeak_ontime <- msdata_1_Zone1_epeak[msdata_1_Zone1_epeak$from == 1, ]
+
+#Survival in SevereDelay for each group:
+msdata_1_Zone1_mpeak_severedelay <- msdata_1_Zone1_mpeak[msdata_1_Zone1_mpeak$from == 3, ]
+msdata_1_Zone1_opeak_severedelay <- msdata_1_Zone1_opeak[msdata_1_Zone1_opeak$from == 3, ]
+msdata_1_Zone1_epeak_severedelay <- msdata_1_Zone1_epeak[msdata_1_Zone1_epeak$from == 3, ]
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_1_ontime_Zone1_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone1_mpeak_ontime)
+kaplan_meier_1_ontime_Zone1_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone1_opeak_ontime)
+kaplan_meier_1_ontime_Zone1_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone1_epeak_ontime)
+
+#SevereDelay
+kaplan_meier_1_severedelay_Zone1_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone1_mpeak_severedelay)
+kaplan_meier_1_severedelay_Zone1_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone1_opeak_severedelay)
+kaplan_meier_1_severedelay_Zone1_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone1_epeak_severedelay)
+
+
+#ZONE2 & TIME SLOT
+#Survival in OnTime for each group:
+msdata_1_Zone2_mpeak_ontime <- msdata_1_Zone2_mpeak[msdata_1_Zone2_mpeak$from == 1, ]
+msdata_1_Zone2_opeak_ontime <- msdata_1_Zone2_opeak[msdata_1_Zone2_opeak$from == 1, ]
+msdata_1_Zone2_epeak_ontime <- msdata_1_Zone2_epeak[msdata_1_Zone2_epeak$from == 1, ]
+
+#Survival in SevereDelay for each group:
+msdata_1_Zone2_mpeak_severedelay <- msdata_1_Zone2_mpeak[msdata_1_Zone2_mpeak$from == 3, ]
+msdata_1_Zone2_opeak_severedelay <- msdata_1_Zone2_opeak[msdata_1_Zone2_opeak$from == 3, ]
+msdata_1_Zone2_epeak_severedelay <- msdata_1_Zone2_epeak[msdata_1_Zone2_epeak$from == 3, ]
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_1_ontime_Zone2_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone2_mpeak_ontime)
+kaplan_meier_1_ontime_Zone2_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone2_opeak_ontime)
+kaplan_meier_1_ontime_Zone2_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone2_epeak_ontime)
+
+#SevereDelay
+kaplan_meier_1_severedelay_Zone2_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone2_mpeak_severedelay)
+kaplan_meier_1_severedelay_Zone2_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone2_opeak_severedelay)
+kaplan_meier_1_severedelay_Zone2_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone2_epeak_severedelay)
+
+
+#ZONE3 & TIME SLOT
+#Survival in OnTime for each group:
+msdata_1_Zone3_mpeak_ontime <- msdata_1_Zone3_mpeak[msdata_1_Zone3_mpeak$from == 1, ]
+msdata_1_Zone3_opeak_ontime <- msdata_1_Zone3_opeak[msdata_1_Zone3_opeak$from == 1, ]
+msdata_1_Zone3_epeak_ontime <- msdata_1_Zone3_epeak[msdata_1_Zone3_epeak$from == 1, ]
+
+#Survival in SevereDelay for each group:
+msdata_1_Zone3_mpeak_severedelay <- msdata_1_Zone3_mpeak[msdata_1_Zone3_mpeak$from == 3, ]
+msdata_1_Zone3_opeak_severedelay <- msdata_1_Zone3_opeak[msdata_1_Zone3_opeak$from == 3, ]
+msdata_1_Zone3_epeak_severedelay <- msdata_1_Zone3_epeak[msdata_1_Zone3_epeak$from == 3, ]
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_1_ontime_Zone3_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone3_mpeak_ontime)
+kaplan_meier_1_ontime_Zone3_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone3_opeak_ontime)
+kaplan_meier_1_ontime_Zone3_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone3_epeak_ontime)
+
+#SevereDelay
+kaplan_meier_1_severedelay_Zone3_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone3_mpeak_severedelay)
+kaplan_meier_1_severedelay_Zone3_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone3_opeak_severedelay)
+kaplan_meier_1_severedelay_Zone3_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone3_epeak_severedelay)
+
+
+#ZONE4 & TIME SLOT
+#Survival in OnTime for each group:
+msdata_1_Zone4_mpeak_ontime <- msdata_1_Zone4_mpeak[msdata_1_Zone4_mpeak$from == 1, ]
+msdata_1_Zone4_opeak_ontime <- msdata_1_Zone4_opeak[msdata_1_Zone4_opeak$from == 1, ]
+msdata_1_Zone4_epeak_ontime <- msdata_1_Zone4_epeak[msdata_1_Zone4_epeak$from == 1, ]
+
+#Survival in SevereDelay for each group:
+msdata_1_Zone4_mpeak_severedelay <- msdata_1_Zone4_mpeak[msdata_1_Zone4_mpeak$from == 3, ]
+msdata_1_Zone4_opeak_severedelay <- msdata_1_Zone4_opeak[msdata_1_Zone4_opeak$from == 3, ]
+msdata_1_Zone4_epeak_severedelay <- msdata_1_Zone4_epeak[msdata_1_Zone4_epeak$from == 3, ]
+
+#KAPLAN-MEIER:
+#OnTime
+kaplan_meier_1_ontime_Zone4_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone4_mpeak_ontime)
+kaplan_meier_1_ontime_Zone4_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone4_opeak_ontime)
+kaplan_meier_1_ontime_Zone4_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone4_epeak_ontime)
+
+#SevereDelay
+kaplan_meier_1_severedelay_Zone4_mpeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone4_mpeak_severedelay)
+kaplan_meier_1_severedelay_Zone4_opeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone4_opeak_severedelay)
+kaplan_meier_1_severedelay_Zone4_epeak <- survfit(Surv(time, status) ~ 1, data = msdata_1_Zone4_epeak_severedelay)
+```
+
+1) Zone1 & Time Slot
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_1_ontime_Zone1_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim = c(0,20))
+lines(kaplan_meier_1_ontime_Zone1_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ontime_Zone1_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+# Survival in SevereDelay:
+plot(kaplan_meier_1_severedelay_Zone1_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim = c(0, 10), conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_Zone1_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_Zone1_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+2) Zone2 & Time Slot
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_1_ontime_Zone2_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim = c(0,20))
+lines(kaplan_meier_1_ontime_Zone2_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ontime_Zone2_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+# Survival in SevereDelay:
+plot(kaplan_meier_1_severedelay_Zone2_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim = c(0, 10), conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_Zone2_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_Zone2_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+3) Zone3 & Time Slot
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_1_ontime_Zone3_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim = c(0,20))
+lines(kaplan_meier_1_ontime_Zone3_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ontime_Zone3_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+# Survival in SevereDelay:
+plot(kaplan_meier_1_severedelay_Zone3_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim = c(0, 10), conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_Zone3_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_Zone3_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+4) Zone4 & Time Slot
+```{r}
+par(mfrow=c(1,2))
+
+# Survival in OnTime:
+plot(kaplan_meier_1_ontime_Zone4_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From OnTime to Delay", col="#87CEFA", lwd = 2, conf.int=FALSE, xlim = c(0,20))
+lines(kaplan_meier_1_ontime_Zone4_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_ontime_Zone4_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+legend("bottomleft", legend = c("Morning Peak", "Off Peak", "Evening Peak"), 
+       col = c("#87CEFA", "#EB5C82", "#F59B51"), bty = "n", lwd = 2, cex = 1.2)
+
+# Survival in SevereDelay:
+plot(kaplan_meier_1_severedelay_Zone4_mpeak, xlab = "Time (min)", ylab = "Survival in the current state", 
+     main = "From SevereDelay to Delay", col="#87CEFA", lwd = 2, xlim = c(0, 10), conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_Zone4_opeak, col = "#EB5C82", lwd = 2, conf.int=FALSE)
+lines(kaplan_meier_1_severedelay_Zone_epeak, col = "#F59B51", lwd = 2, conf.int=FALSE)
+```
+
+Compute Transition Probabilities:
+1) Zone1 & Time Slot
+```{r}
+pt1_Zone1_mpeak <- probtrans(msf1_Zone1_mpeak, predt = 0, method = "aalen")
+pt1_Zone1_opeak <- probtrans(msf1_Zone1_opeak, predt = 0, method = "aalen")
+pt1_Zone1_epeak <- probtrans(msf1_Zone1_epeak, predt = 0, method = "aalen")
+
+pt_list <- list(
+  Zone1_mpeak = pt1_Zone1_mpeak,
+  Zone1_opeak = pt1_Zone1_opeak,
+  Zone1_epeak = pt1_Zone1_epeak
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#D1E5F0", "#F6A482", "#B31529")
+ord <- c(1,2,3)
+# make_plot <- function(pt_obj, from_state, scenario_name, state_label) {
+#   plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+#     scale_fill_manual(values = statecols) +
+#     theme_minimal() +
+#     labs(
+#       title = paste("From", state_label, "(", scenario_name, ")"),
+#       x = "Time (Minutes ahead)",
+#       y = "Transition Probability"
+#     ) +
+#     guides(fill = guide_legend(title = "States"))
+# }
+# plot_specs <- expand.grid(
+#   scenario = names(pt_list),
+#   from = 1:3,
+#   stringsAsFactors = FALSE
+# )
+plots <- mapply(
+  function(scenario, from) {
+    make_plot(
+      pt_obj = pt_list[[scenario]],
+      from_state = from,
+      scenario_name = scenario,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$scenario,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 3)
+```
+
+2) Zone2 & Time Slot
+```{r}
+pt1_Zone2_mpeak <- probtrans(msf1_Zone2_mpeak, predt = 0, method = "aalen")
+pt1_Zone2_opeak <- probtrans(msf1_Zone2_opeak, predt = 0, method = "aalen")
+pt1_Zone2_epeak <- probtrans(msf1_Zone2_epeak, predt = 0, method = "aalen")
+
+pt_list <- list(
+  Zone2_mpeak = pt1_Zone2_mpeak,
+  Zone2_opeak = pt1_Zone2_opeak,
+  Zone2_epeak = pt1_Zone2_epeak
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#D1E5F0", "#F6A482", "#B31529")
+ord <- c(1,2,3)
+# make_plot <- function(pt_obj, from_state, scenario_name, state_label) {
+#   plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+#     scale_fill_manual(values = statecols) +
+#     theme_minimal() +
+#     labs(
+#       title = paste("From", state_label, "(", scenario_name, ")"),
+#       x = "Time (Minutes ahead)",
+#       y = "Transition Probability"
+#     ) +
+#     guides(fill = guide_legend(title = "States"))
+# }
+# plot_specs <- expand.grid(
+#   scenario = names(pt_list),
+#   from = 1:3,
+#   stringsAsFactors = FALSE
+# )
+plots <- mapply(
+  function(scenario, from) {
+    make_plot(
+      pt_obj = pt_list[[scenario]],
+      from_state = from,
+      scenario_name = scenario,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$scenario,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 3)
+```
+
+3) Zone3 & Time Slot
+```{r}
+pt1_Zone3_mpeak <- probtrans(msf1_Zone3_mpeak, predt = 0, method = "aalen")
+pt1_Zone3_opeak <- probtrans(msf1_Zone3_opeak, predt = 0, method = "aalen")
+pt1_Zone3_epeak <- probtrans(msf1_Zone3_epeak, predt = 0, method = "aalen")
+
+pt_list <- list(
+  Zone3_mpeak = pt1_Zone3_mpeak,
+  Zone3_opeak = pt1_Zone3_opeak,
+  Zone3_epeak = pt1_Zone3_epeak
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#D1E5F0", "#F6A482", "#B31529")
+ord <- c(1,2,3)
+# make_plot <- function(pt_obj, from_state, scenario_name, state_label) {
+#   plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+#     scale_fill_manual(values = statecols) +
+#     theme_minimal() +
+#     labs(
+#       title = paste("From", state_label, "(", scenario_name, ")"),
+#       x = "Time (Minutes ahead)",
+#       y = "Transition Probability"
+#     ) +
+#     guides(fill = guide_legend(title = "States"))
+# }
+# plot_specs <- expand.grid(
+#   scenario = names(pt_list),
+#   from = 1:3,
+#   stringsAsFactors = FALSE
+# )
+plots <- mapply(
+  function(scenario, from) {
+    make_plot(
+      pt_obj = pt_list[[scenario]],
+      from_state = from,
+      scenario_name = scenario,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$scenario,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 3)
+```
+
+4) Zone4 & Time Slot
+```{r}
+pt1_Zone4_mpeak <- probtrans(msf1_Zone4_mpeak, predt = 0, method = "aalen")
+pt1_Zone4_opeak <- probtrans(msf1_Zone4_opeak, predt = 0, method = "aalen")
+pt1_Zone4_epeak <- probtrans(msf1_Zone4_epeak, predt = 0, method = "aalen")
+
+pt_list <- list(
+  Zone4_mpeak = pt1_Zone4_mpeak,
+  Zone4_opeak = pt1_Zone4_opeak,
+  Zone4_epeak = pt1_Zone4_epeak
+)
+state_names <- c("OnTime", "MildDelay", "SevereDelay")
+statecols <- c("#D1E5F0", "#F6A482", "#B31529")
+ord <- c(1,2,3)
+# make_plot <- function(pt_obj, from_state, scenario_name, state_label) {
+#   plot(pt_obj, ord = ord, from = from_state, xlim = c(0,30), use.ggplot = TRUE) +
+#     scale_fill_manual(values = statecols) +
+#     theme_minimal() +
+#     labs(
+#       title = paste("From", state_label, "(", scenario_name, ")"),
+#       x = "Time (Minutes ahead)",
+#       y = "Transition Probability"
+#     ) +
+#     guides(fill = guide_legend(title = "States"))
+# }
+# plot_specs <- expand.grid(
+#   scenario = names(pt_list),
+#   from = 1:3,
+#   stringsAsFactors = FALSE
+# )
+plots <- mapply(
+  function(scenario, from) {
+    make_plot(
+      pt_obj = pt_list[[scenario]],
+      from_state = from,
+      scenario_name = scenario,
+      state_label = state_names[from]
+    )
+  },
+  plot_specs$scenario,
+  plot_specs$from,
+  SIMPLIFY = FALSE
+)
+grid.arrange(grobs = plots, nrow = 3, ncol = 3)
+```
+
+AIC and BIC:
+```{r}
+print("Zone1 & Time Slot")
+AIC(c1_Zone1_mpeak)
+AIC(c1_Zone1_opeak)
+AIC(c1_Zone1_epeak)
+BIC(c1_Zone1_mpeak)
+BIC(c1_Zone1_opeak)
+BIC(c1_Zone1_epeak)
+
+print("Zone2 & Time Slot")
+AIC(c1_Zone2_mpeak)
+AIC(c1_Zone2_opeak)
+AIC(c1_Zone2_epeak)
+BIC(c1_Zone2_mpeak)
+BIC(c1_Zone2_opeak)
+BIC(c1_Zone2_epeak)
+
+print("Zone3 & Time Slot")
+AIC(c1_Zone3_mpeak)
+AIC(c1_Zone3_opeak)
+AIC(c1_Zone3_epeak)
+BIC(c1_Zone3_mpeak)
+BIC(c1_Zone3_opeak)
+BIC(c1_Zone3_epeak)
+
+print("Zone4 & Time Slot")
+AIC(c1_Zone4_mpeak)
+AIC(c1_Zone4_opeak)
+AIC(c1_Zone4_epeak)
+BIC(c1_Zone4_mpeak)
+BIC(c1_Zone4_opeak)
+BIC(c1_Zone4_epeak)
+```
+
